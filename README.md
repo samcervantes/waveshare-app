@@ -87,4 +87,5 @@ src/
     flappy_app.cpp/.h          Flappy-Bird-style single-button game
     reflex_app.cpp/.h           Timing/reflex game: stop the sweeping bar in the zone
     stopwatch_app.cpp/.h         Start/stop stopwatch
+    wifi_app.cpp/.h               Scans nearby WiFi networks, shows signal strength
 ```

@@ -7,9 +7,10 @@
 #include "apps/reflex_app.h"
 #include "apps/rgb_app.h"
 #include "apps/stopwatch_app.h"
+#include "apps/wifi_app.h"
 
 // Launcher order: page 1 = {clock, rgb}, page 2 = {counter, bounce},
-// page 3 = {flappy, reflex}, page 4 = {stopwatch}.
+// page 3 = {flappy, reflex}, page 4 = {stopwatch, wifi}.
 // To add an app: write src/apps/your_app.cpp/.h (copy counter_app as a
 // template), then add it here.
 const AppDescriptor *const app_registry[] = {
@@ -20,6 +21,7 @@ const AppDescriptor *const app_registry[] = {
     &flappy_app,
     &reflex_app,
     &stopwatch_app,
+    &wifi_app,
 };
 
 const size_t APP_COUNT = sizeof(app_registry) / sizeof(app_registry[0]);

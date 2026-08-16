@@ -99,3 +99,12 @@ line in `app_registry.cpp`.
   terminal) is unreliable right after a reset/flash - `pio device monitor`
   in an actual terminal works fine, but don't rely on quick automated
   serial reads to verify a flash immediately after upload.
+- **`platformio.ini` uses `board_build.partitions = huge_app.csv`** (single
+  ~3MB app partition, no OTA) instead of the default OTA-capable partition
+  table (two ~1.3MB app slots). Adding `WiFi.h` (`wifi_app.cpp`) alone
+  pulled in enough of the TLS/lwIP/network stack to blow past the default
+  1.3MB slot even though the app barely uses WiFi. If a future app adds
+  another heavy library and hits "program size ... greater than maximum
+  allowed" again, this is already about as roomy as it gets on this
+  board's 4MB flash - the fix at that point is trimming dependencies, not
+  the partition table.
