@@ -84,4 +84,5 @@ src/
     rgb_app.cpp/.h           NeoPixel color cycler
     counter_app.cpp/.h        Tally counter
     bounce_app.cpp/.h          DVD-logo-style bouncing ball
+    flappy_app.cpp/.h          Flappy-Bird-style single-button game
 ```
