@@ -85,4 +85,5 @@ src/
     counter_app.cpp/.h        Tally counter
     bounce_app.cpp/.h          DVD-logo-style bouncing ball
     flappy_app.cpp/.h          Flappy-Bird-style single-button game
+    reflex_app.cpp/.h           Timing/reflex game: stop the sweeping bar in the zone
 ```
