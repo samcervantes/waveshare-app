@@ -17,9 +17,9 @@ constexpr lv_coord_t SCREEN_W = LCD_PANEL_WIDTH;
 constexpr lv_coord_t SCREEN_H = LCD_PANEL_HEIGHT;
 constexpr lv_coord_t DOTS_H = 24;
 constexpr lv_coord_t PAGE_H = SCREEN_H - DOTS_H;
-// Physically-accurate (60pt) size was 90px; bumped up further per feedback
-// that it still read small on this screen.
-constexpr lv_coord_t TILE_SIZE = 108;
+// 90px (physically-accurate 60pt) read too small, 108px read too big -
+// settled here per feedback.
+constexpr lv_coord_t TILE_SIZE = 100;
 
 constexpr uint32_t PAGE_ANIM_MS = 220;
 
@@ -128,7 +128,7 @@ void launcher_init() {
 
       lv_obj_t *tile = lv_obj_create(block);
       lv_obj_set_size(tile, TILE_SIZE, TILE_SIZE);
-      lv_obj_set_style_radius(tile, 25, 0);
+      lv_obj_set_style_radius(tile, 23, 0);
       lv_obj_set_style_bg_color(tile, app->icon_color, 0);
       lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
       lv_obj_set_style_pad_all(tile, 0, 0);
@@ -136,7 +136,7 @@ void launcher_init() {
 
       lv_obj_t *sym = lv_label_create(tile);
       lv_label_set_text(sym, app->icon_symbol);
-      lv_obj_set_style_text_font(sym, &lv_font_montserrat_40, 0);
+      lv_obj_set_style_text_font(sym, &lv_font_montserrat_32, 0);
       lv_obj_set_style_text_color(sym, lv_color_white(), 0);
       lv_obj_center(sym);
 
