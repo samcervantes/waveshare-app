@@ -5,6 +5,10 @@
 #include <LovyanGFX.hpp>
 #include <lvgl.h>
 
+#if defined(BOARD_TOUCH_LCD147)
+#include "touch.h"
+#endif
+
 namespace {
 
 class LGFX : public lgfx::LGFX_Device {
@@ -35,8 +39,16 @@ class LGFX : public lgfx::LGFX_Device {
     pcfg.panel_height = LCD_PANEL_HEIGHT;
     pcfg.offset_x = LCD_OFFSET_X;
     pcfg.offset_y = LCD_OFFSET_Y;
+#if defined(BOARD_TOUCH_LCD147)
+    // JD9853 on this board reports non-inverted colors and BGR order
+    // opposite of the ST7789 board's panel - tune here if colors still
+    // look wrong.
+    pcfg.invert = false;
+    pcfg.rgb_order = true;
+#else
     pcfg.invert = true;
     pcfg.rgb_order = false;
+#endif
     pcfg.bus_shared = true;
     _panel.config(pcfg);
 
@@ -66,6 +78,18 @@ void lvgl_flush_cb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   lv_disp_flush_ready(disp);
 }
 
+#if defined(BOARD_TOUCH_LCD147)
+lv_indev_drv_t indev_drv;
+
+void touch_read_cb(lv_indev_drv_t * /*drv*/, lv_indev_data_t *data) {
+  int16_t x = 0, y = 0;
+  bool pressed = touch_read(&x, &y);
+  data->point.x = x;
+  data->point.y = y;
+  data->state = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+}
+#endif
+
 }  // namespace
 
 void display_init() {
@@ -86,6 +110,16 @@ void display_init() {
   disp_drv.flush_cb = lvgl_flush_cb;
   disp_drv.draw_buf = &draw_buf;
   lv_disp_drv_register(&disp_drv);
+
+#if defined(BOARD_TOUCH_LCD147)
+  touch_init();
+
+  lv_indev_drv_init(&indev_drv);
+  indev_drv.type = LV_INDEV_TYPE_POINTER;
+  indev_drv.read_cb = touch_read_cb;
+  indev_drv.long_press_time = 500;  // matches input.cpp's LONG_PRESS_MS
+  lv_indev_drv_register(&indev_drv);
+#endif
 }
 
 void display_tick() {

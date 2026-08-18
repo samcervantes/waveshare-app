@@ -5,6 +5,10 @@
 
 #include "config.h"
 
+// No onboard NeoPixel on the touch board (GPIO8 is the BOOT button there
+// instead) - this whole app is a no-op on that build; see app_registry.cpp.
+#ifndef BOARD_TOUCH_LCD147
+
 namespace {
 
 struct ColorEntry {
@@ -88,3 +92,5 @@ const AppDescriptor rgb_app = {
     .on_close = on_close,
     .on_short_press = on_short_press,
 };
+
+#endif  // BOARD_TOUCH_LCD147

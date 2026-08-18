@@ -25,6 +25,7 @@ constexpr uint32_t PAGE_ANIM_MS = 220;
 
 lv_obj_t *launcher_root = nullptr;
 lv_obj_t *app_root = nullptr;
+lv_obj_t *app_touch_overlay = nullptr;
 lv_obj_t *track = nullptr;
 lv_obj_t *icon_tile[MAX_APPS] = {nullptr};
 lv_obj_t *dot[MAX_PAGES] = {nullptr};
@@ -70,6 +71,7 @@ void open_app(int index) {
   active_app = index;
   lv_obj_add_flag(launcher_root, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(app_root, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(app_touch_overlay, LV_OBJ_FLAG_HIDDEN);
   Serial.printf("[launcher] opening %s\n", app_registry[index]->name);
   app_registry[index]->on_open(app_root);
 }
@@ -81,8 +83,66 @@ void close_app() {
   }
   lv_obj_clean(app_root);
   lv_obj_add_flag(app_root, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(app_touch_overlay, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(launcher_root, LV_OBJ_FLAG_HIDDEN);
   active_app = -1;
+}
+
+// Touch support (touch board only - these events only ever fire if
+// display.cpp registered a pointer indev, see BOARD_TOUCH_LCD147 there).
+// Tapping an icon opens it directly rather than stepping the cursor over
+// with repeated short presses, since "tap what you want" is what a
+// touchscreen user expects. LV_EVENT_SHORT_CLICKED (not LV_EVENT_CLICKED)
+// is deliberate: LVGL still fires CLICKED on release after a long press,
+// which would double-fire alongside LONG_PRESSED below.
+void icon_touch_cb(lv_event_t *e) {
+  int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+  cursor = idx;
+  update_highlight(false);
+  open_app(cursor);
+}
+
+// Swipe between pages. LV_EVENT_GESTURE fires on the object the touch
+// started on (icon_tile, most of the time) and bubbles up through parents
+// that have LV_OBJ_FLAG_GESTURE_BUBBLE - which LVGL sets by default on
+// every object that has a parent, so it bubbles all the way up to
+// launcher_root for free; launcher_root has that flag explicitly cleared
+// (see launcher_init) so the bubble stops there instead of continuing
+// past it to the screen object, where nothing would be listening.
+// LV_DIR_LEFT (finger dragging leftward) advances to the next page,
+// matching how the track already slides left as `page` increases.
+void page_gesture_cb(lv_event_t * /*e*/) {
+  if (active_app != -1) return;
+
+  lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+  int page = cursor / static_cast<int>(APPS_PER_PAGE);
+  if (dir == LV_DIR_LEFT && page + 1 < static_cast<int>(page_count)) {
+    page++;
+  } else if (dir == LV_DIR_RIGHT && page > 0) {
+    page--;
+  } else {
+    return;
+  }
+
+  cursor = page * static_cast<int>(APPS_PER_PAGE);
+  if (cursor >= static_cast<int>(APP_COUNT)) cursor = static_cast<int>(APP_COUNT) - 1;
+  update_highlight(true);
+}
+
+// A transparent full-screen object stacked above app_root (see its
+// creation below) so a tap anywhere in an app - regardless of what
+// widgets the app itself put there - reaches these handlers, mirroring
+// the physical button's short-press (per-app action) / long-press (home).
+void app_overlay_short_click_cb(lv_event_t * /*e*/) {
+  if (active_app == -1) return;
+  if (app_registry[active_app]->on_short_press) {
+    app_registry[active_app]->on_short_press();
+  }
+}
+
+void app_overlay_long_press_cb(lv_event_t * /*e*/) {
+  if (active_app == -1) return;
+  close_app();
 }
 
 }  // namespace
@@ -98,12 +158,19 @@ void launcher_init() {
   lv_obj_set_size(launcher_root, SCREEN_W, SCREEN_H);
   lv_obj_set_pos(launcher_root, 0, 0);
   lv_obj_clear_flag(launcher_root, LV_OBJ_FLAG_SCROLLABLE);
+  // Every LVGL object with a parent gets LV_OBJ_FLAG_GESTURE_BUBBLE set by
+  // default (see lv_obj_create in lv_obj.c) - without clearing it here,
+  // the bubble in page_gesture_cb's comment keeps climbing right past
+  // launcher_root (where the handler below is attached) up to the screen
+  // object, where nothing listens, and the gesture is silently dropped.
+  lv_obj_clear_flag(launcher_root, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
   track = lv_obj_create(launcher_root);
   lv_obj_remove_style_all(track);
   lv_obj_set_size(track, SCREEN_W * page_count, PAGE_H);
   lv_obj_set_pos(track, 0, 0);
   lv_obj_clear_flag(track, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(launcher_root, page_gesture_cb, LV_EVENT_GESTURE, nullptr);
 
   for (size_t p = 0; p < page_count; p++) {
     lv_obj_t *page = lv_obj_create(track);
@@ -133,6 +200,8 @@ void launcher_init() {
       lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
       lv_obj_set_style_pad_all(tile, 0, 0);
       lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_add_event_cb(tile, icon_touch_cb, LV_EVENT_SHORT_CLICKED,
+                           reinterpret_cast<void *>(static_cast<intptr_t>(idx)));
 
       lv_obj_t *sym = lv_label_create(tile);
       lv_label_set_text(sym, app->icon_symbol);
@@ -177,6 +246,19 @@ void launcher_init() {
   lv_obj_set_style_bg_opa(app_root, LV_OPA_COVER, 0);
   lv_obj_clear_flag(app_root, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(app_root, LV_OBJ_FLAG_HIDDEN);
+
+  // A sibling created after app_root (so it always paints on top of
+  // whatever the active app builds), not a child of it - app_root's
+  // children get wiped by lv_obj_clean() on every close_app(), which
+  // would destroy this if it lived underneath.
+  app_touch_overlay = lv_obj_create(scr);
+  lv_obj_remove_style_all(app_touch_overlay);
+  lv_obj_set_size(app_touch_overlay, SCREEN_W, SCREEN_H);
+  lv_obj_set_pos(app_touch_overlay, 0, 0);
+  lv_obj_clear_flag(app_touch_overlay, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(app_touch_overlay, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_event_cb(app_touch_overlay, app_overlay_short_click_cb, LV_EVENT_SHORT_CLICKED, nullptr);
+  lv_obj_add_event_cb(app_touch_overlay, app_overlay_long_press_cb, LV_EVENT_LONG_PRESSED, nullptr);
 
   cursor = 0;
   active_app = -1;
