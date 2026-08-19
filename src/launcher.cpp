@@ -71,7 +71,12 @@ void open_app(int index) {
   active_app = index;
   lv_obj_add_flag(launcher_root, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(app_root, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(app_touch_overlay, LV_OBJ_FLAG_HIDDEN);
+  // Leave the overlay hidden for wants_raw_touch apps so it doesn't win
+  // every hit-test over the widgets they create themselves - see
+  // app_interface.h.
+  if (!app_registry[index]->wants_raw_touch) {
+    lv_obj_clear_flag(app_touch_overlay, LV_OBJ_FLAG_HIDDEN);
+  }
   Serial.printf("[launcher] opening %s\n", app_registry[index]->name);
   app_registry[index]->on_open(app_root);
 }
@@ -133,6 +138,8 @@ void page_gesture_cb(lv_event_t * /*e*/) {
 // creation below) so a tap anywhere in an app - regardless of what
 // widgets the app itself put there - reaches these handlers, mirroring
 // the physical button's short-press (per-app action) / long-press (home).
+// Skipped for apps with wants_raw_touch set (see open_app/close_app) so
+// their own widgets can be tapped directly instead.
 void app_overlay_short_click_cb(lv_event_t * /*e*/) {
   if (active_app == -1) return;
   if (app_registry[active_app]->on_short_press) {
@@ -140,7 +147,10 @@ void app_overlay_short_click_cb(lv_event_t * /*e*/) {
   }
 }
 
-void app_overlay_long_press_cb(lv_event_t * /*e*/) {
+// Attached to both app_touch_overlay (for ordinary apps) and app_root
+// itself (so holding anywhere still goes home even for wants_raw_touch
+// apps, where the overlay - and its long-press handling - is skipped).
+void app_long_press_home_cb(lv_event_t * /*e*/) {
   if (active_app == -1) return;
   close_app();
 }
@@ -246,6 +256,11 @@ void launcher_init() {
   lv_obj_set_style_bg_opa(app_root, LV_OPA_COVER, 0);
   lv_obj_clear_flag(app_root, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(app_root, LV_OBJ_FLAG_HIDDEN);
+  // Fallback so holding anywhere still goes home for wants_raw_touch apps,
+  // where app_touch_overlay (and its own long-press handling) is skipped -
+  // see open_app/close_app. A no-op for ordinary apps, since the overlay
+  // sits on top of app_root and wins the hit-test first for them anyway.
+  lv_obj_add_event_cb(app_root, app_long_press_home_cb, LV_EVENT_LONG_PRESSED, nullptr);
 
   // A sibling created after app_root (so it always paints on top of
   // whatever the active app builds), not a child of it - app_root's
@@ -258,7 +273,7 @@ void launcher_init() {
   lv_obj_clear_flag(app_touch_overlay, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(app_touch_overlay, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_event_cb(app_touch_overlay, app_overlay_short_click_cb, LV_EVENT_SHORT_CLICKED, nullptr);
-  lv_obj_add_event_cb(app_touch_overlay, app_overlay_long_press_cb, LV_EVENT_LONG_PRESSED, nullptr);
+  lv_obj_add_event_cb(app_touch_overlay, app_long_press_home_cb, LV_EVENT_LONG_PRESSED, nullptr);
 
   cursor = 0;
   active_app = -1;

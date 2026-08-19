@@ -31,4 +31,16 @@ struct AppDescriptor {
   // foreground, for whatever per-app interaction makes sense. Set to
   // nullptr if the app doesn't use short press.
   void (*on_short_press)();
+
+  // Touch board only (see config.h's BOARD_TOUCH_LCD147; harmless no-op
+  // elsewhere). By default the launcher puts an invisible full-screen
+  // layer on top of every app that turns any tap into a call to
+  // on_short_press, so ordinary apps don't need to know touch exists.
+  // Set this true to skip that layer instead and make the widgets *this*
+  // app creates in on_open directly clickable (lv_obj_add_event_cb(...,
+  // LV_EVENT_CLICKED, ...) on them works as normal) - for games/apps
+  // that care where on screen a tap landed, not just that one happened.
+  // Holding anywhere still returns home either way (via app_root, see
+  // launcher.cpp), and the physical button always works as a fallback.
+  bool wants_raw_touch;
 };
