@@ -1,21 +1,12 @@
 #include "clock_app.h"
 
 #include <Arduino.h>
-#include <WiFi.h>
 #include <lvgl.h>
 #include <time.h>
 
-#include "wifi_credentials.h"
+#include "wifi_status.h"
 
 namespace {
-
-// America/Los_Angeles (Pacific Time) - handles PST/PDT DST transitions
-// automatically. Update if this board moves elsewhere.
-constexpr char TZ_STRING[] = "PST8PDT,M3.2.0/2,M11.1.0/2";
-constexpr char NTP_SERVER1[] = "pool.ntp.org";
-constexpr char NTP_SERVER2[] = "time.nist.gov";
-constexpr uint32_t WIFI_TIMEOUT_MS = 15000;
-constexpr uint32_t NTP_TIMEOUT_MS = 10000;
 
 // Digit colors to cycle through on short press.
 constexpr uint32_t COLORS[] = {0xFFFFFF, 0x0A84FF, 0x30D158, 0xFF9F0A, 0xFF375F};
@@ -31,61 +22,13 @@ lv_obj_t *date_label = nullptr;
 lv_timer_t *tick_timer = nullptr;
 size_t color_idx = 0;
 
-// This board has no battery-backed RTC, so real time only exists once
-// synced over WiFi/NTP. Both flags are deliberately sticky for the whole
-// boot session (not reset in on_close/on_open) - a successful sync keeps
-// ticking correctly off the chip's internal clock without WiFi, and a
-// failed attempt isn't retried on every reopen (that would mean eating
-// the ~15s connect timeout each time); power-cycle the board to retry.
-bool time_synced = false;
-bool sync_attempted = false;
-
 void apply_color() {
   lv_color_t c = lv_color_hex(COLORS[color_idx]);
   lv_obj_set_style_text_color(time_label, c, 0);
   lv_obj_set_style_text_color(meridiem_label, c, 0);
 }
 
-void sync_time() {
-  sync_attempted = true;
-  lv_label_set_text(date_label, "Connecting to WiFi...");
-  lv_timer_handler();  // flush status text to the panel before blocking below
-
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_TIMEOUT_MS) {
-    delay(100);
-  }
-
-  if (WiFi.status() != WL_CONNECTED) {
-    lv_label_set_text(date_label, "No WiFi - showing uptime");
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
-    return;
-  }
-
-  lv_label_set_text(date_label, "Syncing time...");
-  lv_timer_handler();
-
-  configTzTime(TZ_STRING, NTP_SERVER1, NTP_SERVER2);
-
-  struct tm timeinfo;
-  bool got_time = getLocalTime(&timeinfo, NTP_TIMEOUT_MS);
-
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-
-  if (!got_time) {
-    lv_label_set_text(date_label, "Time sync failed - showing uptime");
-    return;
-  }
-
-  time_synced = true;
-}
-
-// hour24 is 0-23 either way, whether it came from a real synced clock or
+// hour24 is 0-23 either way, whether it came from the real synced clock or
 // (see refresh_time) the seconds-since-boot fallback - keeps the 12h/AM
 // and PM formatting in one place instead of duplicated per source.
 void set_time_labels(int hour24, int minute, int second) {
@@ -97,7 +40,7 @@ void set_time_labels(int hour24, int minute, int second) {
 }
 
 void refresh_time(lv_timer_t * /*t*/) {
-  if (time_synced) {
+  if (wifi_status_time_synced()) {
     time_t now = time(nullptr);
     struct tm timeinfo;
     localtime_r(&now, &timeinfo);
@@ -106,10 +49,11 @@ void refresh_time(lv_timer_t * /*t*/) {
     lv_label_set_text_fmt(date_label, "%s, %s %d", WEEKDAYS[timeinfo.tm_wday], MONTHS[timeinfo.tm_mon],
                            timeinfo.tm_mday);
   } else {
-    // No successful sync yet (or this boot never had WiFi) - fall back to
-    // seconds-since-boot wrapped to a 24h face, same as before this app
-    // could reach real time at all. date_label is left alone here: it's
-    // already showing whatever status sync_time() set.
+    // WiFi/NTP sync (see wifi_status.cpp) hasn't landed yet this boot -
+    // fall back to seconds-since-boot wrapped to a 24h face rather than
+    // blocking here waiting for it; this label will start showing the
+    // real date the moment wifi_status_time_synced() flips true.
+    lv_label_set_text(date_label, "Syncing time...");
     uint32_t s = millis() / 1000;
     set_time_labels((s / 3600) % 24, (s / 60) % 60, s % 60);
   }
@@ -153,8 +97,6 @@ void on_open(lv_obj_t *parent) {
   // Real text content has to exist before the align calls below, since
   // time_row and its neighbors are sized to their content (LV_SIZE_CONTENT)
   // - aligning first would anchor them to empty-label sizes.
-  refresh_time(nullptr);
-  if (!sync_attempted) sync_time();
   refresh_time(nullptr);
 
   lv_obj_align(time_row, LV_ALIGN_CENTER, 0, -20);

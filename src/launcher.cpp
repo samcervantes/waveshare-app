@@ -5,6 +5,7 @@
 
 #include "app_registry.h"
 #include "config.h"
+#include "wifi_status.h"
 
 namespace {
 
@@ -247,6 +248,17 @@ void launcher_init() {
     lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
     dot[p] = d;
   }
+
+  // Home-screen-only WiFi status dot - a child of launcher_root (not
+  // app_root) so it's automatically hidden/shown alongside the rest of
+  // the home screen by open_app/close_app, with no extra visibility
+  // bookkeeping needed here. Icon grid sizing (TILE_SIZE) is untouched;
+  // this just overlays the empty top-right corner.
+  lv_obj_t *wifi_icon = lv_label_create(launcher_root);
+  lv_obj_set_style_text_font(wifi_icon, &lv_font_montserrat_16, 0);
+  lv_label_set_text(wifi_icon, LV_SYMBOL_WIFI);
+  lv_obj_align(wifi_icon, LV_ALIGN_TOP_RIGHT, -8, 6);
+  wifi_status_init(wifi_icon);
 
   app_root = lv_obj_create(scr);
   lv_obj_remove_style_all(app_root);
