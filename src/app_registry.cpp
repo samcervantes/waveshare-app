@@ -1,5 +1,6 @@
 #include "app_registry.h"
 
+#include "apps/bluetooth_app.h"
 #include "apps/bounce_app.h"
 #include "apps/clock_app.h"
 #include "apps/counter_app.h"
@@ -20,9 +21,9 @@
 #endif
 
 // Launcher order: page 1 = {clock, rgb}, page 2 = {counter, bounce},
-// page 3 = {flappy, reflex}, page 4 = {stopwatch, wifi}, page 5 = {photos}.
-// (rgb is skipped on the touch board, which has no NeoPixel; whack is
-// touch board only, since it needs tap position.)
+// page 3 = {flappy, reflex}, page 4 = {stopwatch, wifi}, page 5 =
+// {photos, bluetooth}. (rgb is skipped on the touch board, which has no
+// NeoPixel; whack is touch board only, since it needs tap position.)
 // To add an app: write src/apps/your_app.cpp/.h (copy counter_app as a
 // template), then add it here.
 const AppDescriptor *const app_registry[] = {
@@ -40,6 +41,7 @@ const AppDescriptor *const app_registry[] = {
 #if defined(BOARD_TOUCH_LCD147)
     &whack_app,
 #endif
+    &bluetooth_app,
 };
 
 const size_t APP_COUNT = sizeof(app_registry) / sizeof(app_registry[0]);
