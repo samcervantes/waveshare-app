@@ -86,7 +86,7 @@ void on_open(lv_obj_t *parent) {
 
   date_label = lv_label_create(parent);
   lv_obj_set_style_text_font(date_label, &lv_font_montserrat_16, 0);
-  lv_obj_set_style_text_color(date_label, lv_color_hex(0x888888), 0);
+  lv_obj_set_style_text_color(date_label, lv_color_hex(0xCCCCCC), 0);
 
   lv_obj_t *hint = lv_label_create(parent);
   lv_label_set_text(hint, "short: color  |  hold: home");
