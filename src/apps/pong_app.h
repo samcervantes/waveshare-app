@@ -2,4 +2,4 @@
 
 #include "app_interface.h"
 
-extern const AppDescriptor flappy_app;
+extern const AppDescriptor pong_app;

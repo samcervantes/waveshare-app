@@ -40,7 +40,9 @@ struct AppDescriptor {
   // app creates in on_open directly clickable (lv_obj_add_event_cb(...,
   // LV_EVENT_CLICKED, ...) on them works as normal) - for games/apps
   // that care where on screen a tap landed, not just that one happened.
-  // Holding anywhere still returns home either way (via app_root, see
-  // launcher.cpp), and the physical button always works as a fallback.
+  // Going home is physical-button-only (long-press) regardless of this
+  // flag - there's no touch equivalent, deliberately: holding a finger
+  // still is normal play for some apps (e.g. Pong, tracking the ball),
+  // so a touch long-press-to-home kept firing by accident.
   bool wants_raw_touch;
 };

@@ -99,8 +99,8 @@ void close_app() {
 // Tapping an icon opens it directly rather than stepping the cursor over
 // with repeated short presses, since "tap what you want" is what a
 // touchscreen user expects. LV_EVENT_SHORT_CLICKED (not LV_EVENT_CLICKED)
-// is deliberate: LVGL still fires CLICKED on release after a long press,
-// which would double-fire alongside LONG_PRESSED below.
+// is deliberate: LVGL still fires CLICKED on release even after a long
+// press, and holding a finger on an icon shouldn't also open it.
 void icon_touch_cb(lv_event_t *e) {
   int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
   cursor = idx;
@@ -137,23 +137,20 @@ void page_gesture_cb(lv_event_t * /*e*/) {
 
 // A transparent full-screen object stacked above app_root (see its
 // creation below) so a tap anywhere in an app - regardless of what
-// widgets the app itself put there - reaches these handlers, mirroring
-// the physical button's short-press (per-app action) / long-press (home).
-// Skipped for apps with wants_raw_touch set (see open_app/close_app) so
-// their own widgets can be tapped directly instead.
+// widgets the app itself put there - reaches this handler, mirroring the
+// physical button's short-press (per-app action). Skipped for apps with
+// wants_raw_touch set (see open_app/close_app) so their own widgets can
+// be tapped directly instead.
+//
+// Going home is deliberately physical-button-only (long-press), not also
+// a touch long-press: holding a finger still is a normal part of some
+// apps' gameplay (e.g. Pong - pausing mid-drag to track the ball), so a
+// touch long-press-to-home kept firing by accident.
 void app_overlay_short_click_cb(lv_event_t * /*e*/) {
   if (active_app == -1) return;
   if (app_registry[active_app]->on_short_press) {
     app_registry[active_app]->on_short_press();
   }
-}
-
-// Attached to both app_touch_overlay (for ordinary apps) and app_root
-// itself (so holding anywhere still goes home even for wants_raw_touch
-// apps, where the overlay - and its long-press handling - is skipped).
-void app_long_press_home_cb(lv_event_t * /*e*/) {
-  if (active_app == -1) return;
-  close_app();
 }
 
 }  // namespace
@@ -268,11 +265,6 @@ void launcher_init() {
   lv_obj_set_style_bg_opa(app_root, LV_OPA_COVER, 0);
   lv_obj_clear_flag(app_root, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(app_root, LV_OBJ_FLAG_HIDDEN);
-  // Fallback so holding anywhere still goes home for wants_raw_touch apps,
-  // where app_touch_overlay (and its own long-press handling) is skipped -
-  // see open_app/close_app. A no-op for ordinary apps, since the overlay
-  // sits on top of app_root and wins the hit-test first for them anyway.
-  lv_obj_add_event_cb(app_root, app_long_press_home_cb, LV_EVENT_LONG_PRESSED, nullptr);
 
   // A sibling created after app_root (so it always paints on top of
   // whatever the active app builds), not a child of it - app_root's
@@ -285,7 +277,6 @@ void launcher_init() {
   lv_obj_clear_flag(app_touch_overlay, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(app_touch_overlay, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_event_cb(app_touch_overlay, app_overlay_short_click_cb, LV_EVENT_SHORT_CLICKED, nullptr);
-  lv_obj_add_event_cb(app_touch_overlay, app_long_press_home_cb, LV_EVENT_LONG_PRESSED, nullptr);
 
   cursor = 0;
   active_app = -1;

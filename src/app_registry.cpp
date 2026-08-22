@@ -4,8 +4,8 @@
 #include "apps/bounce_app.h"
 #include "apps/clock_app.h"
 #include "apps/counter_app.h"
-#include "apps/flappy_app.h"
 #include "apps/photos_app.h"
+#include "apps/pong_app.h"
 #include "apps/reflex_app.h"
 #include "apps/stack_app.h"
 #include "apps/stock_app.h"
@@ -23,7 +23,7 @@
 #endif
 
 // Launcher order: page 1 = {clock, rgb}, page 2 = {counter, bounce},
-// page 3 = {flappy, reflex}, page 4 = {stopwatch, wifi}, page 5 =
+// page 3 = {pong, reflex}, page 4 = {stopwatch, wifi}, page 5 =
 // {photos, bluetooth}, page 6 = {stack, stocks}. (rgb is skipped on the
 // touch board, which has no NeoPixel; whack is touch board only, since
 // it needs tap position.)
@@ -36,7 +36,7 @@ const AppDescriptor *const app_registry[] = {
 #endif
     &counter_app,
     &bounce_app,
-    &flappy_app,
+    &pong_app,
     &reflex_app,
     &stopwatch_app,
     &wifi_app,

@@ -32,12 +32,14 @@
 // orientation. Revisit if the image still looks off.
 #define LCD_ROTATION 6
 
-// No onboard NeoPixel on this board - GPIO8 is the BOOT button instead, so
-// rgb_app is excluded from the registry (see app_registry.cpp).
+// No onboard NeoPixel on this board, so rgb_app is excluded from the
+// registry (see app_registry.cpp).
 
-// BOOT button. GPIO9 (used on the non-touch board) is a capacitive-touch
-// controller pin here instead.
-#define PIN_BOOT_BUTTON 8
+// BOOT button - same GPIO9 as the non-touch board. Waveshare's docs say
+// GPIO8 is the default BOOT pin, but on this actual unit that's wrong:
+// confirmed by scanning GPIO4/5/8/9/0 live and watching which one the
+// physical button pulls low - it's GPIO9, not GPIO8.
+#define PIN_BOOT_BUTTON 9
 
 // AXS5106L capacitive touch controller (I2C) and QMI8658A IMU, shared bus.
 // Not wired up yet - short press is still the only input handled.
