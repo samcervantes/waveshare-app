@@ -40,11 +40,18 @@ class LGFX : public lgfx::LGFX_Device {
     pcfg.offset_x = LCD_OFFSET_X;
     pcfg.offset_y = LCD_OFFSET_Y;
 #if defined(BOARD_TOUCH_LCD147)
-    // JD9853 on this board reports non-inverted colors and BGR order
-    // opposite of the ST7789 board's panel - tune here if colors still
-    // look wrong.
+    // JD9853 on this board reports non-inverted colors, opposite of the
+    // ST7789 board's panel. rgb_order was previously set true (BGR) based
+    // on how solid UI colors looked, but that was never checked against
+    // full-color continuous-tone content - Photos app testing showed every
+    // photo with a strong red/blue cast (skin tones and a sunset both came
+    // out blue), which is exactly what an R/B-swapped panel order does to
+    // that kind of content while leaving green/white/gray UI elements
+    // (most of this app's icons/text) looking approximately fine. Flipped
+    // back to false (RGB, matching the non-touch board) - tune here again
+    // if colors still look wrong.
     pcfg.invert = false;
-    pcfg.rgb_order = true;
+    pcfg.rgb_order = false;
 #else
     pcfg.invert = true;
     pcfg.rgb_order = false;
