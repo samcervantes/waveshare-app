@@ -28,9 +28,17 @@ lv_timer_t *poll_timer = nullptr;
 bool ntp_configured = false;
 bool time_synced = false;
 
+// Same dBm thresholds as wifi_app/bluetooth_app's signal meters, so
+// "strong/medium/weak" means the same color everywhere in this project.
+lv_color_t rssi_to_color(int rssi) {
+  if (rssi >= -60) return lv_color_hex(0x30D158);  // strong
+  if (rssi >= -75) return lv_color_hex(0xFFD60A);  // medium
+  return lv_color_hex(0xFF453A);                   // weak
+}
+
 void poll(lv_timer_t * /*t*/) {
   bool connected = (WiFi.status() == WL_CONNECTED);
-  lv_obj_set_style_text_color(icon, connected ? lv_color_hex(0x30D158) : lv_color_hex(0x555555), 0);
+  lv_obj_set_style_text_color(icon, connected ? rssi_to_color(WiFi.RSSI()) : lv_color_hex(0x555555), 0);
   if (!connected) return;
 
   if (!ntp_configured) {
