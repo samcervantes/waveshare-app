@@ -57,7 +57,7 @@ void reset_game() {
   cursor_y = AREA_TOP;
 
   update_status();
-  lv_label_set_text(hint_label, "short: stop it in the zone  |  hold: home");
+  lv_label_set_text(hint_label, ACTION_WORD ": stop it in the zone  |  " HOME_HINT);
   place_zone();
   lv_obj_set_pos(cursor, 0, static_cast<lv_coord_t>(cursor_y));
 }
@@ -65,7 +65,7 @@ void reset_game() {
 void die() {
   state = State::GAME_OVER;
   lv_label_set_text_fmt(status_label, "Game Over - Score %d", score);
-  lv_label_set_text(hint_label, "short: retry  |  hold: home");
+  lv_label_set_text(hint_label, ACTION_WORD ": retry  |  " HOME_HINT);
 }
 
 void game_tick(lv_timer_t * /*t*/) {

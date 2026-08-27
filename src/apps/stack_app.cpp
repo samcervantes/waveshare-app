@@ -91,14 +91,14 @@ void reset_game() {
   lv_obj_clear_flag(cur_block, LV_OBJ_FLAG_HIDDEN);
 
   update_status();
-  lv_label_set_text(hint_label, "short: drop  |  hold: home");
+  lv_label_set_text(hint_label, ACTION_WORD ": drop  |  " HOME_HINT);
 }
 
 void end_game() {
   state = State::GAME_OVER;
   lv_obj_add_flag(cur_block, LV_OBJ_FLAG_HIDDEN);
   lv_label_set_text_fmt(status_label, "Game Over - Score %d", score);
-  lv_label_set_text(hint_label, "short: retry  |  hold: home");
+  lv_label_set_text(hint_label, ACTION_WORD ": retry  |  " HOME_HINT);
 }
 
 void game_tick(lv_timer_t * /*t*/) {

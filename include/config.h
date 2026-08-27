@@ -42,11 +42,25 @@
 #define PIN_BOOT_BUTTON 9
 
 // AXS5106L capacitive touch controller (I2C) and QMI8658A IMU, shared bus.
-// Not wired up yet - short press is still the only input handled.
+// Touch is the primary interface on this board (tap to navigate/interact);
+// the physical button's only remaining job is a quick way home from inside
+// an app - see HOME_HINT below and launcher.cpp's launcher_handle_button.
 #define PIN_TOUCH_SDA 18
 #define PIN_TOUCH_SCL 19
 #define PIN_TOUCH_RST 20
 #define PIN_TOUCH_INT 21
+
+// Bottom-hint text apps show for how to get back to the home screen -
+// differs by board because the physical button's role differs: on this
+// board touch handles navigation/actions, so the button is solely a quick
+// press (not a hold) to go home; see the non-touch board's branch below
+// for the older press-and-hold-for-everything behavior.
+#define HOME_HINT "button: home"
+// Apps' hint text describes their per-app action as "<ACTION_WORD>: foo"
+// (e.g. "tap: refresh") - on this board that action only ever happens via
+// touch now, never the physical button (see launcher_handle_button), so
+// it reads "tap" rather than "short".
+#define ACTION_WORD "tap"
 
 #else
 
@@ -80,5 +94,11 @@
 // GPIO9 is an ESP32-C6 strapping pin, so this button also selects the boot
 // mode on reset. Fine to use as a normal input once the app is running.
 #define PIN_BOOT_BUTTON 9
+
+// See the touch board's branch above for why this differs: no touch here,
+// so the button is still the only input, same as always (short = per-app
+// action, hold = home).
+#define HOME_HINT "hold: home"
+#define ACTION_WORD "short"
 
 #endif  // BOARD_TOUCH_LCD147

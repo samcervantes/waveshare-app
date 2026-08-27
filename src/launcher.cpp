@@ -137,15 +137,18 @@ void page_gesture_cb(lv_event_t * /*e*/) {
 
 // A transparent full-screen object stacked above app_root (see its
 // creation below) so a tap anywhere in an app - regardless of what
-// widgets the app itself put there - reaches this handler, mirroring the
-// physical button's short-press (per-app action). Skipped for apps with
+// widgets the app itself put there - reaches this handler and triggers
+// the app's per-app action, same as on_short_press. Skipped for apps with
 // wants_raw_touch set (see open_app/close_app) so their own widgets can
 // be tapped directly instead.
 //
-// Going home is deliberately physical-button-only (long-press), not also
-// a touch long-press: holding a finger still is a normal part of some
-// apps' gameplay (e.g. Pong - pausing mid-drag to track the ball), so a
-// touch long-press-to-home kept firing by accident.
+// Touch board only: touch is the whole interface for interacting with
+// apps here, so this - not the physical button - is how per-app actions
+// fire (see launcher_handle_button, where BOARD_TOUCH_LCD147 reserves the
+// button solely for a quick press back to home). Going home is
+// deliberately not also a touch long-press: holding a finger still is a
+// normal part of some apps' gameplay (e.g. Pong - pausing mid-drag to
+// track the ball), so a touch long-press-to-home kept firing by accident.
 void app_overlay_short_click_cb(lv_event_t * /*e*/) {
   if (active_app == -1) return;
   if (app_registry[active_app]->on_short_press) {
@@ -288,6 +291,18 @@ void launcher_init() {
 void launcher_handle_button(ButtonEvent event) {
   if (event == ButtonEvent::None) return;
 
+#if defined(BOARD_TOUCH_LCD147)
+  // Touch is the whole interface here - tapping icons opens them
+  // (icon_touch_cb), tapping/dragging within an app drives its per-app
+  // action (app_overlay_short_click_cb, or the app's own touch handling
+  // for wants_raw_touch apps like Pong). The physical button's only job
+  // left is a quick press back to home from inside an app; every other
+  // button event (a press on the home screen, or a long press anywhere)
+  // is intentionally ignored.
+  if (active_app != -1 && event == ButtonEvent::ShortPress) {
+    close_app();
+  }
+#else
   if (active_app == -1) {
     if (event == ButtonEvent::ShortPress) {
       cursor = (cursor + 1) % static_cast<int>(APP_COUNT);
@@ -304,4 +319,5 @@ void launcher_handle_button(ButtonEvent event) {
       close_app();
     }
   }
+#endif
 }

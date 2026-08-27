@@ -326,7 +326,7 @@ void on_open(lv_obj_t *parent) {
   lv_obj_add_flag(chart, LV_OBJ_FLAG_HIDDEN);  // shown once real data arrives
 
   lv_obj_t *hint = lv_label_create(parent);
-  lv_label_set_text(hint, "short: refresh  |  hold: home");
+  lv_label_set_text(hint, ACTION_WORD ": refresh  |  " HOME_HINT);
   lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(hint, lv_color_hex(0x555555), 0);
   lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -8);

@@ -58,7 +58,7 @@ void reset_game() {
 
   lv_obj_clear_flag(target, LV_OBJ_FLAG_HIDDEN);
   update_status();
-  lv_label_set_text(hint_label, "tap the dot  |  hold: home");
+  lv_label_set_text(hint_label, "tap the dot  |  " HOME_HINT);
   place_target();
 }
 
@@ -66,7 +66,7 @@ void end_game() {
   state = State::GAME_OVER;
   lv_obj_add_flag(target, LV_OBJ_FLAG_HIDDEN);
   lv_label_set_text_fmt(status_label, "Game Over - Score %d", score);
-  lv_label_set_text(hint_label, "tap anywhere to retry  |  hold: home");
+  lv_label_set_text(hint_label, "tap anywhere to retry  |  " HOME_HINT);
 }
 
 void game_tick(lv_timer_t * /*t*/) {

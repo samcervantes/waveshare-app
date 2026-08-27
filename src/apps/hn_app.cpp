@@ -264,7 +264,7 @@ void on_open(lv_obj_t *parent) {
   }
 
   hint_label = lv_label_create(parent);
-  lv_label_set_text(hint_label, "short: refresh  |  hold: home");
+  lv_label_set_text(hint_label, ACTION_WORD ": refresh  |  " HOME_HINT);
   lv_obj_set_style_text_font(hint_label, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(hint_label, lv_color_hex(0x555555), 0);
   lv_obj_align(hint_label, LV_ALIGN_BOTTOM_MID, 0, -8);

@@ -4,6 +4,7 @@
 #include <lvgl.h>
 #include <time.h>
 
+#include "config.h"
 #include "wifi_status.h"
 
 namespace {
@@ -89,7 +90,7 @@ void on_open(lv_obj_t *parent) {
   lv_obj_set_style_text_color(date_label, lv_color_hex(0xCCCCCC), 0);
 
   lv_obj_t *hint = lv_label_create(parent);
-  lv_label_set_text(hint, "short: color  |  hold: home");
+  lv_label_set_text(hint, ACTION_WORD ": color  |  " HOME_HINT);
   lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(hint, lv_color_hex(0x555555), 0);
   lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -16);

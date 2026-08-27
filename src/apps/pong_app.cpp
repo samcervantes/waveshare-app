@@ -80,9 +80,9 @@ void reset_game() {
 
   update_status();
 #if defined(BOARD_TOUCH_LCD147)
-  lv_label_set_text(hint_label, "drag: move paddle  |  hold: home");
+  lv_label_set_text(hint_label, "drag: move paddle  |  " HOME_HINT);
 #else
-  lv_label_set_text(hint_label, "short: paddle up  |  hold: home");
+  lv_label_set_text(hint_label, "short: paddle up  |  " HOME_HINT);
 #endif
   lv_obj_set_pos(player_paddle, PLAYER_X, static_cast<lv_coord_t>(player_y));
   lv_obj_set_pos(ai_paddle, AI_X, static_cast<lv_coord_t>(ai_y));
@@ -93,7 +93,11 @@ void end_game() {
   state = State::GAME_OVER;
   lv_obj_add_flag(ball, LV_OBJ_FLAG_HIDDEN);
   lv_label_set_text_fmt(status_label, "Game Over - Score %d", score);
-  lv_label_set_text(hint_label, "short: retry  |  hold: home");
+#if defined(BOARD_TOUCH_LCD147)
+  lv_label_set_text(hint_label, "tap: retry  |  " HOME_HINT);
+#else
+  lv_label_set_text(hint_label, "short: retry  |  " HOME_HINT);
+#endif
 }
 
 void game_tick(lv_timer_t * /*t*/) {
