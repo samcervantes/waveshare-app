@@ -39,7 +39,24 @@ constexpr uint32_t WIFI_WAIT_MS = 5000;
 // settings alone can't be trusted as a hard bound. poll_fetch() below
 // force-kills the task if this elapses, so the UI can never get stuck.
 constexpr uint32_t HARD_TIMEOUT_MS = 20000;
-constexpr const char *CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=5m&range=1d";
+
+// Swipeable chart timescales. interval/range are Yahoo chart API params;
+// each pairing is chosen to land comfortably under MAX_POINTS (a 1y daily
+// chart alone would be ~252 points) without needing to grow that buffer:
+// 1d@5m ~78 points, 5d@30m ~65, 1mo@1d ~21, 1y@1wk ~52.
+enum class Timescale { DAY, WEEK, MONTH, YEAR };
+struct TimescaleInfo {
+  const char *label;
+  const char *interval;
+  const char *range;
+};
+constexpr TimescaleInfo TIMESCALES[] = {
+    {"1D", "5m", "1d"},
+    {"1W", "30m", "5d"},
+    {"1M", "1d", "1mo"},
+    {"1Y", "1wk", "1y"},
+};
+constexpr int TIMESCALE_COUNT = sizeof(TIMESCALES) / sizeof(TIMESCALES[0]);
 
 struct StockData {
   bool valid = false;
@@ -69,8 +86,10 @@ lv_obj_t *status_label = nullptr;
 lv_obj_t *price_label = nullptr;
 lv_obj_t *change_label = nullptr;
 lv_obj_t *range_label = nullptr;
+lv_obj_t *timescale_label = nullptr;
 lv_obj_t *chart = nullptr;
 lv_chart_series_t *chart_series = nullptr;
+Timescale current_timescale = Timescale::DAY;
 lv_timer_t *poll_timer = nullptr;
 uint32_t shown_generation = 0;
 TaskHandle_t fetch_task_handle = nullptr;
@@ -83,12 +102,16 @@ uint32_t fetch_started_ms = 0;
 // unrelated host, i.e. transient WiFi flakiness rather than anything
 // Yahoo- or code-specific, so it's worth just trying again a couple of
 // times before giving up.
-bool try_fetch_once(StockData &result) {
+bool try_fetch_once(StockData &result, Timescale ts) {
   IPAddress resolved;
   if (!WiFi.hostByName("query1.finance.yahoo.com", resolved)) {
     snprintf(last_error, sizeof(last_error), "DNS lookup failed");
     return false;
   }
+
+  char url[160];
+  snprintf(url, sizeof(url), "https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=%s&range=%s",
+           TIMESCALES[static_cast<int>(ts)].interval, TIMESCALES[static_cast<int>(ts)].range);
 
   WiFiClientSecure client;
   client.setInsecure();  // public read-only market data, not worth carrying a CA bundle for
@@ -97,7 +120,7 @@ bool try_fetch_once(StockData &result) {
   http.setTimeout(5000);
   http.setConnectTimeout(5000);
 
-  if (!http.begin(client, CHART_URL)) {
+  if (!http.begin(client, url)) {
     snprintf(last_error, sizeof(last_error), "http.begin failed");
     return false;
   }
@@ -155,7 +178,13 @@ bool try_fetch_once(StockData &result) {
 
 constexpr int MAX_ATTEMPTS = 2;
 
-void fetch_task(void * /*param*/) {
+void fetch_task(void *param) {
+  // The timescale to fetch is captured into the task's own parameter by
+  // start_fetch() rather than read from current_timescale here, so a
+  // swipe that changes current_timescale while this task is already
+  // running can't race with it - this task always fetches whatever
+  // timescale was selected at the moment it was created.
+  Timescale ts = static_cast<Timescale>(reinterpret_cast<intptr_t>(param));
   StockData result;
   bool ok = false;
   last_error[0] = '\0';
@@ -170,7 +199,7 @@ void fetch_task(void * /*param*/) {
   } else {
     for (int attempt = 0; attempt < MAX_ATTEMPTS && !ok; attempt++) {
       if (attempt > 0) vTaskDelay(pdMS_TO_TICKS(1500));
-      ok = try_fetch_once(result);
+      ok = try_fetch_once(result, ts);
     }
   }
 
@@ -193,13 +222,14 @@ void start_fetch() {
   fetch_in_progress = true;
   fetch_failed = false;
   fetch_started_ms = millis();
-  lv_label_set_text(status_label, "Fetching SPY...");
+  lv_label_set_text_fmt(status_label, "Fetching SPY (%s)...", TIMESCALES[static_cast<int>(current_timescale)].label);
   // TLS handshake (mbedTLS) + HTTPClient + ArduinoJson's parsing recursion
   // together need more than the 12KB this started with - that overflowed
   // the task's stack and crashed the whole board (Guru Meditation /
   // "Load access fault", confirmed via serial: the stack dump was full of
   // ESP-IDF's 0xa5a5a5a5 unused-stack guard pattern all the way through).
-  xTaskCreate(fetch_task, "stock_fetch", 24576, nullptr, 1, &fetch_task_handle);
+  xTaskCreate(fetch_task, "stock_fetch", 24576,
+              reinterpret_cast<void *>(static_cast<intptr_t>(current_timescale)), 1, &fetch_task_handle);
 }
 
 void apply_data(const StockData &d) {
@@ -287,33 +317,95 @@ void poll_fetch(lv_timer_t * /*t*/) {
   }
 }
 
+void update_timescale_label() {
+  lv_label_set_text(timescale_label, TIMESCALES[static_cast<int>(current_timescale)].label);
+}
+
+void change_timescale(int delta) {
+  int idx = (static_cast<int>(current_timescale) + delta + TIMESCALE_COUNT) % TIMESCALE_COUNT;
+  current_timescale = static_cast<Timescale>(idx);
+  update_timescale_label();
+  start_fetch();
+}
+
+// Swipe to change timescale - LV_DIR_LEFT advances (1D -> 1W -> 1M -> 1Y,
+// wrapping back to 1D), matching the swipe-left-advances convention used
+// elsewhere in this project (launcher.cpp's page swipe, wifi_app's
+// Scan/Status tabs).
+void timescale_gesture_cb(lv_event_t * /*e*/) {
+  lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+  if (dir == LV_DIR_LEFT) {
+    change_timescale(1);
+  } else if (dir == LV_DIR_RIGHT) {
+    change_timescale(-1);
+  }
+}
+
+void refresh_tap_cb(lv_event_t * /*e*/) {
+  start_fetch();
+}
+
 void on_open(lv_obj_t *parent) {
   if (!data_mutex) data_mutex = xSemaphoreCreateMutex();
+  current_timescale = Timescale::DAY;
 
-  status_label = lv_label_create(parent);
+  // A stock_app-owned wrapper, not `parent` (app_root) directly - app_root
+  // is shared and reused across every app, so an event callback added
+  // straight to it (as timescale_gesture_cb/refresh_tap_cb are below)
+  // would silently accumulate a fresh duplicate registration every time
+  // this app reopens and go on firing while some other app is open (see
+  // wifi_app.cpp's on_open for the same reasoning, found the hard way
+  // there). Parenting everything to `root` means it - and its callbacks -
+  // are destroyed along with the rest of this app's widgets when the
+  // launcher cleans app_root on close.
+  lv_obj_t *root = lv_obj_create(parent);
+  lv_obj_remove_style_all(root);
+  lv_obj_set_size(root, LCD_PANEL_WIDTH, LCD_PANEL_HEIGHT);
+  lv_obj_set_pos(root, 0, 0);
+  lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+  // Gesture events bubble by default (LV_OBJ_FLAG_GESTURE_BUBBLE, set on
+  // every object with a parent), so without clearing it here the swipe
+  // handled below would keep bubbling past `root` up to app_root and the
+  // screen, where nothing listens - same as launcher_root in launcher.cpp.
+  lv_obj_clear_flag(root, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(root, timescale_gesture_cb, LV_EVENT_GESTURE, nullptr);
+  // Unlike gestures, LV_EVENT_CLICKED-family events do *not* bubble by
+  // default, so a tap needs to land directly on `root` to reach this -
+  // fine for the empty space around the labels, but the chart below is a
+  // full lv_obj-derived widget and clickable by default, which would
+  // otherwise swallow taps over it before they ever reach root.
+  lv_obj_add_event_cb(root, refresh_tap_cb, LV_EVENT_SHORT_CLICKED, nullptr);
+
+  status_label = lv_label_create(root);
   lv_obj_set_style_text_font(status_label, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(status_label, lv_color_hex(0x888888), 0);
+  lv_obj_set_style_text_color(status_label, lv_color_hex(0xDDDDDD), 0);
   lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(status_label, LCD_PANEL_WIDTH - 12);
   lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align(status_label, LV_ALIGN_TOP_MID, 0, 8);
 
-  price_label = lv_label_create(parent);
+  price_label = lv_label_create(root);
   lv_obj_set_style_text_font(price_label, &lv_font_montserrat_32, 0);
   lv_label_set_text(price_label, "$--.--");
   lv_obj_align(price_label, LV_ALIGN_TOP_MID, 0, 30);
 
-  change_label = lv_label_create(parent);
+  change_label = lv_label_create(root);
   lv_obj_set_style_text_font(change_label, &lv_font_montserrat_16, 0);
-  lv_obj_set_style_text_color(change_label, lv_color_hex(0x888888), 0);
+  lv_obj_set_style_text_color(change_label, lv_color_hex(0xDDDDDD), 0);
   lv_obj_align(change_label, LV_ALIGN_TOP_MID, 0, 74);
 
-  range_label = lv_label_create(parent);
+  range_label = lv_label_create(root);
   lv_obj_set_style_text_font(range_label, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(range_label, lv_color_hex(0x666666), 0);
+  lv_obj_set_style_text_color(range_label, lv_color_hex(0xDDDDDD), 0);
   lv_obj_align(range_label, LV_ALIGN_TOP_MID, 0, 98);
 
-  chart = lv_chart_create(parent);
+  timescale_label = lv_label_create(root);
+  lv_obj_set_style_text_font(timescale_label, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(timescale_label, lv_color_hex(0x0A84FF), 0);
+  lv_obj_align(timescale_label, LV_ALIGN_TOP_RIGHT, -10, 122);
+  update_timescale_label();
+
+  chart = lv_chart_create(root);
   lv_obj_set_size(chart, 156, 140);
   lv_obj_align(chart, LV_ALIGN_TOP_MID, 0, 122);
   lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
@@ -322,13 +414,14 @@ void on_open(lv_obj_t *parent) {
   lv_obj_set_style_size(chart, 0, LV_PART_INDICATOR);  // no point markers, just the line
   lv_obj_set_style_bg_color(chart, lv_color_hex(0x111111), 0);
   lv_obj_set_style_border_width(chart, 0, 0);
+  lv_obj_clear_flag(chart, LV_OBJ_FLAG_CLICKABLE);  // see the comment above refresh_tap_cb's registration
   chart_series = lv_chart_add_series(chart, lv_color_hex(0x0A84FF), LV_CHART_AXIS_PRIMARY_Y);
   lv_obj_add_flag(chart, LV_OBJ_FLAG_HIDDEN);  // shown once real data arrives
 
-  lv_obj_t *hint = lv_label_create(parent);
-  lv_label_set_text(hint, ACTION_WORD ": refresh  |  " HOME_HINT);
+  lv_obj_t *hint = lv_label_create(root);
+  lv_label_set_text(hint, "swipe: scale  |  " ACTION_WORD ": refresh  |  " HOME_HINT);
   lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(hint, lv_color_hex(0x555555), 0);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0xDDDDDD), 0);
   lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -8);
 
   shown_generation = 0;
@@ -351,7 +444,7 @@ void on_close() {
     fetch_task_handle = nullptr;
     fetch_in_progress = false;
   }
-  status_label = price_label = change_label = range_label = chart = nullptr;
+  status_label = price_label = change_label = range_label = timescale_label = chart = nullptr;
   chart_series = nullptr;
 }
 
@@ -368,4 +461,8 @@ const AppDescriptor stock_app = {
     .on_open = on_open,
     .on_close = on_close,
     .on_short_press = on_short_press,
+    // Touch board only (no-op elsewhere, see app_interface.h) - needed so
+    // this app can handle its own swipe-to-change-timescale gesture; the
+    // launcher's generic tap-anywhere overlay has no gesture support.
+    .wants_raw_touch = true,
 };
