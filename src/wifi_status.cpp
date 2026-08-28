@@ -31,6 +31,7 @@ uint32_t connect_started_ms = 0;
 bool tried_fallback = false;
 WifiNetwork active_network = WifiNetwork::PRIMARY;
 int last_primary_wl_status = WL_IDLE_STATUS;
+int last_fallback_wl_status = WL_IDLE_STATUS;
 
 // Same dBm thresholds as wifi_app/bluetooth_app's signal meters, so
 // "strong/medium/weak" means the same color everywhere in this project.
@@ -44,26 +45,37 @@ void poll(lv_timer_t * /*t*/) {
   bool connected = (WiFi.status() == WL_CONNECTED);
   lv_obj_set_style_text_color(icon, connected ? rssi_to_color(WiFi.RSSI()) : lv_color_hex(0x555555), 0);
 
-  // One-shot fallback, not a retry loop: WiFi.begin() only ever gets
-  // called again here once, when the primary network hasn't connected
-  // within WIFI_PRIMARY_TIMEOUT_MS. An earlier version of this file called
-  // WiFi.begin() repeatedly on a timer whenever disconnected, which
-  // destabilized the WiFi driver badly enough to eventually crash the
-  // board (see wifi_status_init's comment) - setAutoReconnect handles
-  // ongoing reconnection to whichever network this successfully lands
-  // on, so this only needs to fire at most once per boot.
-  if (!connected && !tried_fallback && millis() - connect_started_ms > WIFI_PRIMARY_TIMEOUT_MS) {
-    last_primary_wl_status = WiFi.status();
-    tried_fallback = true;
-    active_network = WifiNetwork::FALLBACK;
-    // WPA2, confirmed via the WiFi app's Scan page (shows "[WPA2]" next
-    // to WIFI_SSID_FALLBACK) - an earlier version of this tried it as an
-    // open network instead, on the theory that a WL_DISCONNECTED status
-    // that never resolved meant an auth-type mismatch, but the scan
-    // result rules that out; the real culprit for a stalled connection
-    // was more likely the -77dBm signal (borderline weak, see
-    // rssi_to_color) plus this being a shared/guest network.
-    WiFi.begin(WIFI_SSID_FALLBACK, WIFI_PASSWORD_FALLBACK);
+  if (connected) {
+    // Keep resetting this while connected, rather than only setting it at
+    // the moment a WiFi.begin() call goes out: if this network later
+    // drops, the elapsed-time check below should give it a fresh
+    // WIFI_PRIMARY_TIMEOUT_MS grace period to reconnect on its own (via
+    // setAutoReconnect) before switching away, not treat a connection
+    // that's been solid for hours as instantly overdue for a switch the
+    // moment it blips.
+    connect_started_ms = millis();
+  } else if (millis() - connect_started_ms > WIFI_PRIMARY_TIMEOUT_MS) {
+    // Alternates indefinitely between the two networks, not a one-shot
+    // primary->fallback switch: neither network is guaranteed reachable
+    // at any given time (e.g. the primary's fine at home but unreachable
+    // elsewhere, and vice versa for the fallback), so if whichever one is
+    // currently active hasn't connected within WIFI_PRIMARY_TIMEOUT_MS,
+    // try the other one instead - and keep alternating for as long as
+    // neither connects. This still isn't the hand-rolled tight retry loop
+    // that previously destabilized the WiFi driver badly enough to crash
+    // the board (see wifi_status_init's comment): each WiFi.begin() call
+    // here is at least WIFI_PRIMARY_TIMEOUT_MS apart, same spacing as the
+    // one-shot version this replaced.
+    if (active_network == WifiNetwork::PRIMARY) {
+      last_primary_wl_status = WiFi.status();
+      tried_fallback = true;
+      active_network = WifiNetwork::FALLBACK;
+      WiFi.begin(WIFI_SSID_FALLBACK, WIFI_PASSWORD_FALLBACK);
+    } else {
+      last_fallback_wl_status = WiFi.status();
+      active_network = WifiNetwork::PRIMARY;
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    }
     connect_started_ms = millis();
   }
 
@@ -116,6 +128,10 @@ bool wifi_status_fallback_attempted() {
 
 int wifi_status_last_primary_wl_status() {
   return last_primary_wl_status;
+}
+
+int wifi_status_last_fallback_wl_status() {
+  return last_fallback_wl_status;
 }
 
 uint32_t wifi_status_connect_started_ms() {

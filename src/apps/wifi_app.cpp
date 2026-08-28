@@ -15,7 +15,7 @@ namespace {
 
 constexpr size_t MAX_ROWS = 5;
 constexpr lv_coord_t ROW_H = 40;
-constexpr lv_coord_t AREA_TOP = 50;
+constexpr lv_coord_t AREA_TOP = 70;
 constexpr lv_coord_t BAR_W = 36;
 constexpr lv_coord_t BAR_H = 10;
 
@@ -141,43 +141,60 @@ void page_gesture_cb(lv_event_t * /*e*/) {
   }
 }
 
-// Live view of wifi_status.cpp's primary -> fallback progression, since
-// the user reported the fallback network never seemed to connect and
-// there was previously no visibility into why (out of range? wrong
-// password? still waiting out the timeout?).
+// Live view of wifi_status.cpp's primary/fallback alternation, since the
+// user reported the fallback network never seemed to connect and there
+// was previously no visibility into why (out of range? wrong password?
+// still waiting out the timeout?) - and later, that once it *did* fall
+// back, it never tried the primary network again even after coming back
+// in range of it (wifi_status.cpp now alternates indefinitely instead of
+// switching once).
 void update_status_page(lv_timer_t * /*t*/) {
   bool connected = (WiFi.status() == WL_CONNECTED);
+  // Which network is *actually* associated right now, by SSID - not just
+  // "is anything connected" combined with wifi_status_active_network().
+  // Without this, reconnecting to the primary network could still show
+  // the fallback row as "Connected" simply because *something* was
+  // connected and the fallback had been tried at some point, regardless
+  // of which network it actually was.
+  bool on_primary = connected && WiFi.SSID() == WIFI_SSID;
+  bool on_fallback = connected && WiFi.SSID() == WIFI_SSID_FALLBACK;
   WifiNetwork active = wifi_status_active_network();
-  char buf[48];
+  char buf[64];
 
   lv_label_set_text(primary_ssid_label, WIFI_SSID);
-  if (active == WifiNetwork::PRIMARY) {
-    if (connected) {
-      snprintf(buf, sizeof(buf), "Connected  %ddBm", WiFi.RSSI());
-      lv_obj_set_style_text_color(primary_state_label, lv_color_hex(0x30D158), 0);
-    } else {
-      uint32_t elapsed_s = (millis() - wifi_status_connect_started_ms()) / 1000;
-      snprintf(buf, sizeof(buf), "Connecting...  %us", elapsed_s);
-      lv_obj_set_style_text_color(primary_state_label, lv_color_hex(0xFFD60A), 0);
-    }
+  if (on_primary) {
+    snprintf(buf, sizeof(buf), "Connected  %ddBm", WiFi.RSSI());
+    lv_obj_set_style_text_color(primary_state_label, lv_color_hex(0x30D158), 0);
+  } else if (active == WifiNetwork::PRIMARY) {
+    uint32_t elapsed_s = (millis() - wifi_status_connect_started_ms()) / 1000;
+    snprintf(buf, sizeof(buf), "Connecting...  %us", elapsed_s);
+    lv_obj_set_style_text_color(primary_state_label, lv_color_hex(0xFFD60A), 0);
   } else {
-    snprintf(buf, sizeof(buf), "Gave up: %s", wl_status_str(wifi_status_last_primary_wl_status()));
+    // Not active right now (trying the fallback instead) - this is the
+    // outcome of the *last* attempt, not a permanent verdict, since
+    // wifi_status.cpp will circle back to try this network again.
+    snprintf(buf, sizeof(buf), "Retrying later: %s", wl_status_str(wifi_status_last_primary_wl_status()));
     lv_obj_set_style_text_color(primary_state_label, lv_color_hex(0xFF453A), 0);
   }
   lv_label_set_text(primary_state_label, buf);
 
   lv_label_set_text(fallback_ssid_label, WIFI_SSID_FALLBACK);
-  if (!wifi_status_fallback_attempted()) {
-    uint32_t remaining_s = (WIFI_PRIMARY_TIMEOUT_MS - (millis() - wifi_status_connect_started_ms())) / 1000;
-    snprintf(buf, sizeof(buf), "Not tried yet  (in %us)", remaining_s);
-    lv_obj_set_style_text_color(fallback_state_label, lv_color_hex(0x666666), 0);
-  } else if (connected) {
+  if (on_fallback) {
     snprintf(buf, sizeof(buf), "Connected  %ddBm", WiFi.RSSI());
     lv_obj_set_style_text_color(fallback_state_label, lv_color_hex(0x30D158), 0);
-  } else {
+  } else if (!wifi_status_fallback_attempted()) {
+    uint32_t remaining_s = (WIFI_PRIMARY_TIMEOUT_MS - (millis() - wifi_status_connect_started_ms())) / 1000;
+    snprintf(buf, sizeof(buf), "Not tried yet  (in %us)", remaining_s);
+    lv_obj_set_style_text_color(fallback_state_label, lv_color_hex(0xDDDDDD), 0);
+  } else if (active == WifiNetwork::FALLBACK) {
     uint32_t elapsed_s = (millis() - wifi_status_connect_started_ms()) / 1000;
     snprintf(buf, sizeof(buf), "%s  (%us)", wl_status_str(WiFi.status()), elapsed_s);
     lv_obj_set_style_text_color(fallback_state_label, lv_color_hex(0xFFD60A), 0);
+  } else {
+    // Not active right now (trying the primary instead) - again, the
+    // last attempt's outcome, not permanent.
+    snprintf(buf, sizeof(buf), "Retrying later: %s", wl_status_str(wifi_status_last_fallback_wl_status()));
+    lv_obj_set_style_text_color(fallback_state_label, lv_color_hex(0xFF453A), 0);
   }
   lv_label_set_text(fallback_state_label, buf);
 }
@@ -288,33 +305,44 @@ void on_open(lv_obj_t *parent) {
   // these tabs are the primary way to switch (swipe still works as a
   // best-effort bonus, see page_gesture_cb) - sized as generous pill
   // buttons rather than plain small text, since the plain-text version
-  // was too small to tap precisely.
+  // was too small to tap precisely. Fixed width/height rather than
+  // content-based auto-sizing: font 20 + 20px of horizontal padding on
+  // *each* of the two buttons doesn't fit side by side in this panel's
+  // 172px width (it added up to well over twice that), which is what
+  // caused the text to overflow the pills in the first place.
+  // Width is fixed (that's what fits two of these side by side); height
+  // is left content-based (font line height + vertical padding) so the
+  // text is trivially vertically centered rather than needing to compute
+  // that by hand against a separately fixed height.
+  constexpr lv_coord_t TAB_W = 78;
   lv_obj_t *tabs = lv_obj_create(root);
   lv_obj_remove_style_all(tabs);
-  lv_obj_set_size(tabs, LCD_PANEL_WIDTH, 42);
+  lv_obj_set_size(tabs, LCD_PANEL_WIDTH, 40);
   lv_obj_set_pos(tabs, 0, 4);
   lv_obj_clear_flag(tabs, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_flex_flow(tabs, LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(tabs, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_style_pad_column(tabs, 12, 0);
+  lv_obj_set_style_pad_column(tabs, 8, 0);
 
   tab_scan = lv_label_create(tabs);
   lv_label_set_text(tab_scan, "Scan");
-  lv_obj_set_style_text_font(tab_scan, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_font(tab_scan, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_align(tab_scan, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_bg_opa(tab_scan, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(tab_scan, 8, 0);
-  lv_obj_set_style_pad_hor(tab_scan, 20, 0);
   lv_obj_set_style_pad_ver(tab_scan, 8, 0);
+  lv_obj_set_width(tab_scan, TAB_W);
   lv_obj_add_flag(tab_scan, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(tab_scan, switch_to_scan, LV_EVENT_SHORT_CLICKED, nullptr);
 
   tab_status = lv_label_create(tabs);
   lv_label_set_text(tab_status, "Status");
-  lv_obj_set_style_text_font(tab_status, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_font(tab_status, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_align(tab_status, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_bg_opa(tab_status, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(tab_status, 8, 0);
-  lv_obj_set_style_pad_hor(tab_status, 20, 0);
   lv_obj_set_style_pad_ver(tab_status, 8, 0);
+  lv_obj_set_width(tab_status, TAB_W);
   lv_obj_add_flag(tab_status, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(tab_status, switch_to_status, LV_EVENT_SHORT_CLICKED, nullptr);
 #endif
@@ -336,8 +364,16 @@ void on_open(lv_obj_t *parent) {
 
   status_label = lv_label_create(scan_page);
   lv_obj_set_style_text_font(status_label, &lv_font_montserrat_16, 0);
-  lv_obj_set_style_text_color(status_label, lv_color_hex(0x888888), 0);
+  lv_obj_set_style_text_color(status_label, lv_color_hex(0xDDDDDD), 0);
+  // scan_page spans the full height starting at y=0 - on the touch board
+  // that means y=8 (this label's old, pre-tabs position) sits right in
+  // the middle of the tabs row above it (y=4 to 44). Non-touch has no
+  // tabs, so it keeps the original tighter offset.
+#if defined(BOARD_TOUCH_LCD147)
+  lv_obj_align(status_label, LV_ALIGN_TOP_MID, 0, 46);
+#else
   lv_obj_align(status_label, LV_ALIGN_TOP_MID, 0, 8);
+#endif
 
   for (size_t i = 0; i < MAX_ROWS; i++) {
     lv_obj_t *row = lv_obj_create(scan_page);
@@ -383,7 +419,7 @@ void on_open(lv_obj_t *parent) {
   lv_obj_t *primary_header = lv_label_create(status_page);
   lv_label_set_text(primary_header, "Primary");
   lv_obj_set_style_text_font(primary_header, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(primary_header, lv_color_hex(0x666666), 0);
+  lv_obj_set_style_text_color(primary_header, lv_color_hex(0xDDDDDD), 0);
   lv_obj_set_pos(primary_header, 10, AREA_TOP);
 
   primary_ssid_label = lv_label_create(status_page);
@@ -398,13 +434,19 @@ void on_open(lv_obj_t *parent) {
   lv_obj_set_pos(primary_ssid_label, 10, AREA_TOP + 20);
 
   primary_state_label = lv_label_create(status_page);
-  lv_obj_set_style_text_font(primary_state_label, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(primary_state_label, &lv_font_montserrat_16, 0);
+  // Continuous horizontal scroll rather than truncating, so a long status
+  // message (e.g. "Retrying later: connect failed (bad password?)") is
+  // fully readable instead of just cut off at the panel edge - same
+  // technique as the Hacker News app's headlines and the Scan page's rows.
+  lv_label_set_long_mode(primary_state_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_width(primary_state_label, LCD_PANEL_WIDTH - 20);
   lv_obj_set_pos(primary_state_label, 10, AREA_TOP + 44);
 
   lv_obj_t *fallback_header = lv_label_create(status_page);
   lv_label_set_text(fallback_header, "Fallback");
   lv_obj_set_style_text_font(fallback_header, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(fallback_header, lv_color_hex(0x666666), 0);
+  lv_obj_set_style_text_color(fallback_header, lv_color_hex(0xDDDDDD), 0);
   lv_obj_set_pos(fallback_header, 10, AREA_TOP + 84);
 
   fallback_ssid_label = lv_label_create(status_page);
@@ -415,13 +457,15 @@ void on_open(lv_obj_t *parent) {
   lv_obj_set_pos(fallback_ssid_label, 10, AREA_TOP + 104);
 
   fallback_state_label = lv_label_create(status_page);
-  lv_obj_set_style_text_font(fallback_state_label, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(fallback_state_label, &lv_font_montserrat_16, 0);
+  lv_label_set_long_mode(fallback_state_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_width(fallback_state_label, LCD_PANEL_WIDTH - 20);
   lv_obj_set_pos(fallback_state_label, 10, AREA_TOP + 128);
 #endif
 
   hint_label = lv_label_create(root);
   lv_obj_set_style_text_font(hint_label, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(hint_label, lv_color_hex(0x555555), 0);
+  lv_obj_set_style_text_color(hint_label, lv_color_hex(0xDDDDDD), 0);
   lv_obj_align(hint_label, LV_ALIGN_BOTTOM_MID, 0, -16);
 
   scan_state = ScanState::IDLE;
