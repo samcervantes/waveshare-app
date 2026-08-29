@@ -30,22 +30,63 @@
 // the point each widget is positioned (game_to_px/set_game_rect) - and
 // the reverse for touch input (px_to_game). Play the game with the board
 // turned 90 clockwise from its normal orientation (see those functions'
-// comments for the exact convention). The score/hint text is *not*
-// rotated along with it - LVGL 8 has no simple way to rotate label text,
-// so those stay upright at the physical top/bottom of the panel, and the
-// game's own play area leaves a margin clear of them (see PLAY_X_MIN/MAX)
-// rather than actually needing to read sideways.
+// comments for the exact convention). The score/hint text is rotated to
+// match (see HUD_TEXT_W/HUD_X0 below) rather than staying upright at the
+// physical top/bottom of the panel - LVGL 8 can rotate a label like any
+// other object via the transform_angle/pivot style properties, the same
+// mechanism the bird's beak/eyebrow already use to turn plain rects into
+// angled shapes, it's just not the obvious place to look for it.
 
 namespace {
 
 constexpr float GAME_W = LCD_PANEL_HEIGHT;  // 320 - landscape width (the travel axis)
 constexpr float GAME_H = LCD_PANEL_WIDTH;   // 172 - landscape height (the gravity axis)
 
-// The physical top/bottom text strips correspond to the extremes of
-// GAME_W once rotated (see game_to_px) - gameplay stays inside this
-// margin so nothing overlaps the unrotated score/hint labels.
+// Keeps gameplay off the extreme gx (landscape-horizontal) ends - not
+// for the HUD text anymore (that now lives in a gy-axis strip instead,
+// see HUD_TEXT_W/HUD_X0 below), but ANCHOR_X still needs this clearance
+// from PLAY_X_MIN/MAX for MAX_PULL (see its own comment).
 constexpr float PLAY_X_MIN = 26;
 constexpr float PLAY_X_MAX = GAME_W - 26;
+
+// The status/hint text reads along the landscape/game orientation (see
+// the file header), which rules out a plain rotated lv_label: LVGL 8 can
+// only rotate a *live* object (lv_obj_set_style_transform_angle, same as
+// the bird's beak/eyebrow below) by rendering it into an offscreen layer
+// sized to its own on-screen footprint first - for a label that footprint
+// is dozens of px on a side, and at this project's LV_MEM_SIZE (64KB,
+// see lv_conf.h) that layer allocation fails outright, so the object
+// silently doesn't draw at all (LVGL logs a warning, but nothing reaches
+// the panel or a monitor that isn't already attached).
+//
+// Instead, HUD text is pre-rotated *pixel data*, not a rotated live
+// object: draw_hud_text() renders normal upright text into a small
+// scratch lv_canvas (hud_scratch_buf), then lv_canvas_transform() rotates
+// that bitmap into a second, on-screen canvas (hud_status_buf/
+// hud_hint_buf) - a directly-into-the-destination-buffer software
+// rotation that doesn't need a layer at all, so it's cheap regardless of
+// text length. The scratch canvas is HUD_SRC_W x HUD_SRC_H (upright);
+// each destination canvas is the swapped HUD_DST_W x HUD_DST_H (rotated),
+// positioned on screen with a plain lv_obj_set_pos - no pivot math needed
+// since the rotation is already baked into the pixels.
+//
+// angle -900 (rotate_source_to_dest's `angle` param takes it directly,
+// no need to wrap to a positive value the way object styles do) rotates
+// text to advance in the landscape-forward (+gx) direction - see
+// game_to_px's comment for why physical "up" (decreasing physical y) is
+// landscape-forward. offset_y=HUD_SRC_W in draw_hud_text() is what maps
+// the rotated-about-its-own-top-left-corner source into the positive
+// [0,HUD_DST_W]x[0,HUD_DST_H] area the destination canvas actually
+// covers - see the source comment there for the corner-pivot math.
+constexpr lv_coord_t HUD_SRC_W = 140;
+constexpr lv_coord_t HUD_SRC_H = 20;
+constexpr lv_coord_t HUD_DST_W = HUD_SRC_H;
+constexpr lv_coord_t HUD_DST_H = HUD_SRC_W;
+constexpr lv_coord_t HUD_X0 = 3;  // physical-x inset from the sky edge (gy ~3..~23)
+
+lv_color_t hud_scratch_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(HUD_SRC_W, HUD_SRC_H)];
+lv_color_t hud_status_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(HUD_DST_W, HUD_DST_H)];
+lv_color_t hud_hint_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(HUD_DST_W, HUD_DST_H)];
 
 // ANCHOR_X needs at least MAX_PULL of clearance from PLAY_X_MIN/MAX (too
 // close to either and the touch point hits the physical screen boundary
@@ -124,8 +165,9 @@ constexpr int NUM_LEVELS = sizeof(LEVELS) / sizeof(LEVELS[0]);
 
 enum class State { AIMING, FLYING, GAME_OVER };
 
-lv_obj_t *status_label = nullptr;
-lv_obj_t *hint_label = nullptr;
+lv_obj_t *hud_scratch = nullptr;  // offscreen, never shown - see HUD comment above
+lv_obj_t *status_canvas = nullptr;
+lv_obj_t *hint_canvas = nullptr;
 lv_obj_t *bird = nullptr;
 lv_obj_t *pigs[MAX_PIGS_PER_LEVEL] = {nullptr};
 lv_obj_t *blocks[MAX_BLOCKS_PER_LEVEL] = {nullptr};
@@ -196,8 +238,36 @@ void set_game_rect(lv_obj_t *obj, float gx0, float gy0, float gw, float gh) {
   lv_obj_set_pos(obj, p.x, p.y);
 }
 
+// Renders `text` upright into the shared scratch canvas, then rotates
+// that bitmap into `dst` (status_canvas or hint_canvas) - see the HUD
+// comment up top for why this goes through pixel data instead of a
+// rotated live label.
+//
+// lv_canvas_transform rotates around (pivot_x,pivot_y) *in source
+// coordinates*; passing (0,0) pivots on the source's own top-left
+// corner, which - like rotating a rectangle by hinging it at one
+// corner - sweeps the far corner (HUD_SRC_W,HUD_SRC_H) around to land at
+// (HUD_SRC_H,-HUD_SRC_W) relative to that same pivot (rotating -90:
+// (dx,dy) -> (dy,-dx)). offset_y=HUD_SRC_W shifts that whole swept
+// rectangle by (0,+HUD_SRC_W), landing it exactly on [0,HUD_DST_W] x
+// [0,HUD_DST_H] - the destination canvas's own bounds - rather than
+// partly off into negative destination coordinates.
+void draw_hud_text(lv_obj_t *dst, const lv_font_t *font, const char *text) {
+  lv_canvas_fill_bg(hud_scratch, lv_color_black(), LV_OPA_TRANSP);
+  lv_draw_label_dsc_t label_dsc;
+  lv_draw_label_dsc_init(&label_dsc);
+  label_dsc.font = font;
+  label_dsc.color = lv_color_hex(0xDDDDDD);
+  lv_canvas_draw_text(hud_scratch, 0, 0, HUD_SRC_W, &label_dsc, text);
+
+  lv_canvas_fill_bg(dst, lv_color_black(), LV_OPA_TRANSP);
+  lv_canvas_transform(dst, lv_canvas_get_img(hud_scratch), -900, LV_IMG_ZOOM_NONE, 0, HUD_SRC_W, 0, 0, true);
+}
+
 void update_status() {
-  lv_label_set_text_fmt(status_label, "Score: %d  Lvl: %d  Birds: %d", score, current_level + 1, birds_remaining);
+  char buf[48];
+  snprintf(buf, sizeof(buf), "Score: %d  Lvl: %d  Birds: %d", score, current_level + 1, birds_remaining);
+  draw_hud_text(status_canvas, &lv_font_montserrat_16, buf);
 }
 
 // Points each rubber band from its prong tip to the bird's current game
@@ -269,9 +339,9 @@ void reset_game() {
   update_status();
 
 #if defined(BOARD_TOUCH_LCD147)
-  lv_label_set_text(hint_label, "drag: aim  |  " HOME_HINT);
+  draw_hud_text(hint_canvas, &lv_font_montserrat_14, "drag: aim  |  " HOME_HINT);
 #else
-  lv_label_set_text(hint_label, "short: launch  |  " HOME_HINT);
+  draw_hud_text(hint_canvas, &lv_font_montserrat_14, "short: launch  |  " HOME_HINT);
 #endif
 }
 
@@ -280,11 +350,13 @@ void end_game() {
   lv_obj_add_flag(bird, LV_OBJ_FLAG_HIDDEN);
   for (int i = 0; i < MAX_PIGS_PER_LEVEL; i++) lv_obj_add_flag(pigs[i], LV_OBJ_FLAG_HIDDEN);
   for (int i = 0; i < MAX_BLOCKS_PER_LEVEL; i++) lv_obj_add_flag(blocks[i], LV_OBJ_FLAG_HIDDEN);
-  lv_label_set_text_fmt(status_label, "Game Over - Score %d", score);
+  char buf[48];
+  snprintf(buf, sizeof(buf), "Game Over - Score %d", score);
+  draw_hud_text(status_canvas, &lv_font_montserrat_16, buf);
 #if defined(BOARD_TOUCH_LCD147)
-  lv_label_set_text(hint_label, "tap: retry  |  " HOME_HINT);
+  draw_hud_text(hint_canvas, &lv_font_montserrat_14, "tap: retry  |  " HOME_HINT);
 #else
-  lv_label_set_text(hint_label, "short: retry  |  " HOME_HINT);
+  draw_hud_text(hint_canvas, &lv_font_montserrat_14, "short: retry  |  " HOME_HINT);
 #endif
 }
 
@@ -521,10 +593,13 @@ lv_obj_t *build_pig(lv_obj_t *parent) {
 }
 
 void on_open(lv_obj_t *parent) {
-  status_label = lv_label_create(parent);
-  lv_obj_set_style_text_font(status_label, &lv_font_montserrat_16, 0);
-  lv_obj_set_style_text_color(status_label, lv_color_hex(0xDDDDDD), 0);
-  lv_obj_align(status_label, LV_ALIGN_TOP_MID, 0, 6);
+  hud_scratch = lv_canvas_create(parent);
+  lv_canvas_set_buffer(hud_scratch, hud_scratch_buf, HUD_SRC_W, HUD_SRC_H, LV_IMG_CF_TRUE_COLOR_ALPHA);
+  lv_obj_add_flag(hud_scratch, LV_OBJ_FLAG_HIDDEN);  // only ever used as a pixel source, never drawn itself
+
+  status_canvas = lv_canvas_create(parent);
+  lv_canvas_set_buffer(status_canvas, hud_status_buf, HUD_DST_W, HUD_DST_H, LV_IMG_CF_TRUE_COLOR_ALPHA);
+  lv_obj_set_pos(status_canvas, HUD_X0, 10);  // footprint: physical y [10, 10+HUD_SRC_W]
 
   // Ground: a static strip along the large-gy edge of game space (where
   // gravity pulls things toward), created first so everything else draws
@@ -704,10 +779,11 @@ void on_open(lv_obj_t *parent) {
   lv_obj_set_style_transform_angle(bird_eyebrow, 3300, 0);  // -30deg slant
   lv_obj_align(bird_eyebrow, LV_ALIGN_TOP_LEFT, -1, -3);
 
-  hint_label = lv_label_create(parent);
-  lv_obj_set_style_text_font(hint_label, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(hint_label, lv_color_hex(0xDDDDDD), 0);
-  lv_obj_align(hint_label, LV_ALIGN_BOTTOM_MID, 0, -6);
+  hint_canvas = lv_canvas_create(parent);
+  lv_canvas_set_buffer(hint_canvas, hud_hint_buf, HUD_DST_W, HUD_DST_H, LV_IMG_CF_TRUE_COLOR_ALPHA);
+  // footprint: physical y [GAME_W-10-HUD_SRC_W, GAME_W-10] - well clear of
+  // status_canvas's [10, 10+HUD_SRC_W] band above.
+  lv_obj_set_pos(hint_canvas, HUD_X0, static_cast<lv_coord_t>(GAME_W) - 10 - HUD_SRC_W);
 
 #if defined(BOARD_TOUCH_LCD147)
   // Covers the whole panel below/above the text strips so a press
@@ -744,7 +820,7 @@ void on_close() {
     lv_timer_del(tick_timer);
     tick_timer = nullptr;
   }
-  status_label = hint_label = bird = ground = nullptr;
+  hud_scratch = status_canvas = hint_canvas = bird = ground = nullptr;
   for (int i = 0; i < MAX_PIGS_PER_LEVEL; i++) pigs[i] = nullptr;
   for (int i = 0; i < MAX_BLOCKS_PER_LEVEL; i++) blocks[i] = nullptr;
   fork_post = fork_left = fork_right = band_line_l = band_line_r = nullptr;
