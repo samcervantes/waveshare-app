@@ -63,6 +63,15 @@ constexpr float BLOCK_W = 16;
 constexpr float BLOCK_H = 22;
 constexpr float GROUND_H = 14;  // strip along the large-gy edge of game space
 
+// The wooden Y-fork stand: a post from the ground up to a fork junction,
+// then two prongs spreading toward the sky (smaller gy) on either side of
+// ANCHOR_X. The rubber bands run from each prong tip to wherever the bird
+// currently is.
+constexpr float PRONG_SPREAD = 14;
+constexpr float PRONG_TIP_Y = ANCHOR_Y - 22;
+constexpr float FORK_Y = ANCHOR_Y + 6;
+constexpr float POST_BASE_Y = GAME_H - GROUND_H;
+
 constexpr float GRAVITY = 0.22f;
 constexpr uint32_t TICK_MS = 30;
 constexpr int START_BIRDS = 6;
@@ -74,21 +83,74 @@ constexpr float NT_MAX_POWER = 9.0f;     // non-touch: launch speed at full mete
 constexpr uint32_t NT_METER_PERIOD_MS = 1300;
 constexpr float METER_STEP = TICK_MS / (NT_METER_PERIOD_MS / 2.0f);
 
+constexpr int MAX_PIGS_PER_LEVEL = 2;
+constexpr int MAX_BLOCKS_PER_LEVEL = 2;
+
+struct LevelPig {
+  float x, y;
+};
+struct LevelBlock {
+  float x, y;
+};
+struct Level {
+  int pig_count;
+  LevelPig pigs[MAX_PIGS_PER_LEVEL];
+  int block_count;
+  LevelBlock blocks[MAX_BLOCKS_PER_LEVEL];
+};
+
+// Fixed layouts, replacing the old fully-random single pig/block spawn.
+// Coordinates are game-space (see GAME_W/GAME_H above) and stay inside the
+// same box the old random spawn constrained itself to - pig x in
+// [ANCHOR_X+30, PLAY_X_MAX], y in [10, GAME_H-20] - so a shot on the
+// non-touch board's fixed launch angle/power range (NT_VX/NT_MAX_POWER)
+// can still reach every pig; the touch board's full 2D aim can reach
+// further, so these stay conservative for both rather than tuned per
+// board. Cycles back to level 0 after the last one - birds_remaining
+// running out is what actually ends the run, not the level list.
+constexpr Level LEVELS[] = {
+    // 1: one pig behind a single block - the original layout.
+    {1, {{230, 90}}, 1, {{170, 79}}},
+    // 2: two pigs spread apart, one block guarding the nearer one.
+    {2, {{190, 50}, {230, 130}}, 1, {{165, 70}}},
+    // 3: one pig behind a two-block tower.
+    {1, {{250, 100}}, 2, {{190, 144}, {190, 122}}},
+    // 4: two pigs, each with its own block.
+    {2, {{190, 40}, {260, 140}}, 2, {{160, 30}, {220, 125}}},
+    // 5: two pigs close together, one block up front.
+    {2, {{270, 70}, {280, 120}}, 1, {{230, 95}}},
+};
+constexpr int NUM_LEVELS = sizeof(LEVELS) / sizeof(LEVELS[0]);
+
 enum class State { AIMING, FLYING, GAME_OVER };
 
 lv_obj_t *status_label = nullptr;
 lv_obj_t *hint_label = nullptr;
 lv_obj_t *bird = nullptr;
-lv_obj_t *pig = nullptr;
-lv_obj_t *block = nullptr;
+lv_obj_t *pigs[MAX_PIGS_PER_LEVEL] = {nullptr};
+lv_obj_t *blocks[MAX_BLOCKS_PER_LEVEL] = {nullptr};
 lv_obj_t *ground = nullptr;
 lv_timer_t *tick_timer = nullptr;
+
+// The fork is static scenery and the bands track the bird - both boards
+// draw them (not just touch), since aiming with a fixed-position bird on
+// the non-touch board still means "a bird loaded in a sling," visually.
+// Point arrays are namespace-scope because lv_line_set_points stores the
+// pointer, not a copy.
+lv_obj_t *fork_post = nullptr;
+lv_obj_t *fork_left = nullptr;
+lv_obj_t *fork_right = nullptr;
+lv_point_t fork_post_pts[2];
+lv_point_t fork_left_pts[2];
+lv_point_t fork_right_pts[2];
+lv_obj_t *band_line_l = nullptr;
+lv_obj_t *band_line_r = nullptr;
+lv_point_t band_points_l[2];
+lv_point_t band_points_r[2];
 
 // Touch-only widgets/state - harmless unused nullptr/0 on the non-touch
 // build, same pattern as wifi_app.cpp's tab_scan/tab_status.
 lv_obj_t *drag_area = nullptr;
-lv_obj_t *band_line = nullptr;
-lv_point_t band_points[2];
 bool pulling = false;
 
 // Non-touch-only state - likewise harmless unused on the touch build.
@@ -98,9 +160,12 @@ int meter_dir = 1;
 
 State state = State::AIMING;
 float bx, by, bvx, bvy;  // all in game space
-float pig_x, pig_y;
-bool block_alive = false;
-float block_x, block_y;
+bool pig_alive[MAX_PIGS_PER_LEVEL];
+float pig_x[MAX_PIGS_PER_LEVEL], pig_y[MAX_PIGS_PER_LEVEL];
+bool block_alive[MAX_BLOCKS_PER_LEVEL];
+float block_x[MAX_BLOCKS_PER_LEVEL], block_y[MAX_BLOCKS_PER_LEVEL];
+int pigs_left = 0;
+int current_level = 0;
 int score = 0;
 int birds_remaining = START_BIRDS;
 
@@ -132,37 +197,61 @@ void set_game_rect(lv_obj_t *obj, float gx0, float gy0, float gw, float gh) {
 }
 
 void update_status() {
-  lv_label_set_text_fmt(status_label, "Score: %d   Birds: %d", score, birds_remaining);
+  lv_label_set_text_fmt(status_label, "Score: %d  Lvl: %d  Birds: %d", score, current_level + 1, birds_remaining);
+}
+
+// Points each rubber band from its prong tip to the bird's current game
+// position (bx, by) and makes sure they're visible - called whenever the
+// bird is loaded/resting in the sling, whether that's a fresh shot or
+// mid-drag on the touch board.
+void update_bands() {
+  lv_obj_clear_flag(band_line_l, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(band_line_r, LV_OBJ_FLAG_HIDDEN);
+  band_points_l[0] = game_to_px(ANCHOR_X - PRONG_SPREAD, PRONG_TIP_Y);
+  band_points_l[1] = game_to_px(bx, by);
+  lv_line_set_points(band_line_l, band_points_l, 2);
+  band_points_r[0] = game_to_px(ANCHOR_X + PRONG_SPREAD, PRONG_TIP_Y);
+  band_points_r[1] = game_to_px(bx, by);
+  lv_line_set_points(band_line_r, band_points_r, 2);
 }
 
 void place_bird_at_anchor() {
   bx = ANCHOR_X;
   by = ANCHOR_Y;
   set_game_rect(bird, bx - BIRD_R, by - BIRD_R, BIRD_R * 2, BIRD_R * 2);
+  update_bands();
 }
 
-void spawn_pig_and_block() {
-#if defined(BOARD_TOUCH_LCD147)
-  // Consistently near the far edge of the play area, not just somewhere
-  // past the halfway point.
-  pig_x = random(static_cast<long>(PLAY_X_MAX - 40), static_cast<long>(PLAY_X_MAX - 10));
-  pig_y = random(10, static_cast<long>(GAME_H - 20));
-#else
-  // Constrained to roughly what's reachable with a fixed NT_VX drift over
-  // however long a full-power shot stays airborne - see the file header.
-  pig_x = constrain(ANCHOR_X + random(40, 140), ANCHOR_X + 30, PLAY_X_MAX);
-  pig_y = random(10, static_cast<long>(GAME_H - 20));
-#endif
-  set_game_rect(pig, pig_x - PIG_R, pig_y - PIG_R, PIG_R * 2, PIG_R * 2);
-  lv_obj_clear_flag(pig, LV_OBJ_FLAG_HIDDEN);
-
-  block_alive = true;
-  float mx = (ANCHOR_X + pig_x) / 2;
-  float my = (ANCHOR_Y + pig_y) / 2;
-  block_x = constrain(mx - BLOCK_W / 2 + random(-10, 10), PLAY_X_MIN, PLAY_X_MAX - BLOCK_W);
-  block_y = constrain(my - BLOCK_H / 2 + random(-10, 10), 6.0f, GAME_H - 6 - BLOCK_H);
-  set_game_rect(block, block_x, block_y, BLOCK_W, BLOCK_H);
-  lv_obj_clear_flag(block, LV_OBJ_FLAG_HIDDEN);
+// Loads a fixed layout from LEVELS[idx]: shows/positions exactly
+// lvl.pig_count pigs and lvl.block_count blocks, hides the remaining
+// unused slots up to MAX_PIGS_PER_LEVEL/MAX_BLOCKS_PER_LEVEL.
+void spawn_level(int idx) {
+  const Level &lvl = LEVELS[idx];
+  for (int i = 0; i < MAX_PIGS_PER_LEVEL; i++) {
+    if (i < lvl.pig_count) {
+      pig_alive[i] = true;
+      pig_x[i] = lvl.pigs[i].x;
+      pig_y[i] = lvl.pigs[i].y;
+      set_game_rect(pigs[i], pig_x[i] - PIG_R, pig_y[i] - PIG_R, PIG_R * 2, PIG_R * 2);
+      lv_obj_clear_flag(pigs[i], LV_OBJ_FLAG_HIDDEN);
+    } else {
+      pig_alive[i] = false;
+      lv_obj_add_flag(pigs[i], LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+  for (int i = 0; i < MAX_BLOCKS_PER_LEVEL; i++) {
+    if (i < lvl.block_count) {
+      block_alive[i] = true;
+      block_x[i] = lvl.blocks[i].x;
+      block_y[i] = lvl.blocks[i].y;
+      set_game_rect(blocks[i], block_x[i], block_y[i], BLOCK_W, BLOCK_H);
+      lv_obj_clear_flag(blocks[i], LV_OBJ_FLAG_HIDDEN);
+    } else {
+      block_alive[i] = false;
+      lv_obj_add_flag(blocks[i], LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+  pigs_left = lvl.pig_count;
 }
 
 void reset_game() {
@@ -173,13 +262,13 @@ void reset_game() {
   meter_value = 0;
   meter_dir = 1;
 
-  place_bird_at_anchor();
+  place_bird_at_anchor();  // also shows/positions the bands
   lv_obj_clear_flag(bird, LV_OBJ_FLAG_HIDDEN);
-  spawn_pig_and_block();
+  current_level = 0;
+  spawn_level(current_level);
   update_status();
 
 #if defined(BOARD_TOUCH_LCD147)
-  lv_obj_add_flag(band_line, LV_OBJ_FLAG_HIDDEN);
   lv_label_set_text(hint_label, "drag: aim  |  " HOME_HINT);
 #else
   lv_label_set_text(hint_label, "short: launch  |  " HOME_HINT);
@@ -189,8 +278,8 @@ void reset_game() {
 void end_game() {
   state = State::GAME_OVER;
   lv_obj_add_flag(bird, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(pig, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(block, LV_OBJ_FLAG_HIDDEN);
+  for (int i = 0; i < MAX_PIGS_PER_LEVEL; i++) lv_obj_add_flag(pigs[i], LV_OBJ_FLAG_HIDDEN);
+  for (int i = 0; i < MAX_BLOCKS_PER_LEVEL; i++) lv_obj_add_flag(blocks[i], LV_OBJ_FLAG_HIDDEN);
   lv_label_set_text_fmt(status_label, "Game Over - Score %d", score);
 #if defined(BOARD_TOUCH_LCD147)
   lv_label_set_text(hint_label, "tap: retry  |  " HOME_HINT);
@@ -203,6 +292,9 @@ void launch(float vx, float vy) {
   bvx = vx;
   bvy = vy;
   state = State::FLYING;
+  // The bird leaves the pouch - hide the bands until it's back in a sling.
+  lv_obj_add_flag(band_line_l, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(band_line_r, LV_OBJ_FLAG_HIDDEN);
 }
 
 #if defined(BOARD_TOUCH_LCD147)
@@ -234,17 +326,12 @@ void on_pull(lv_event_t * /*e*/) {
   bx = ANCHOR_X + dx;
   by = ANCHOR_Y + dy;
   set_game_rect(bird, bx - BIRD_R, by - BIRD_R, BIRD_R * 2, BIRD_R * 2);
-
-  lv_obj_clear_flag(band_line, LV_OBJ_FLAG_HIDDEN);
-  band_points[0] = game_to_px(ANCHOR_X, ANCHOR_Y);
-  band_points[1] = game_to_px(bx, by);
-  lv_line_set_points(band_line, band_points, 2);
+  update_bands();
 }
 
 void on_release(lv_event_t * /*e*/) {
   if (!pulling) return;
   pulling = false;
-  lv_obj_add_flag(band_line, LV_OBJ_FLAG_HIDDEN);
   if (state != State::AIMING) return;
 
   float pull_x = bx - ANCHOR_X;
@@ -284,23 +371,34 @@ void game_tick(lv_timer_t * /*t*/) {
   by += bvy;
   set_game_rect(bird, bx - BIRD_R, by - BIRD_R, BIRD_R * 2, BIRD_R * 2);
 
-  float pdx = bx - pig_x;
-  float pdy = by - pig_y;
-  if (pdx * pdx + pdy * pdy <= (BIRD_R + PIG_R) * (BIRD_R + PIG_R)) {
+  for (int i = 0; i < MAX_PIGS_PER_LEVEL; i++) {
+    if (!pig_alive[i]) continue;
+    float pdx = bx - pig_x[i];
+    float pdy = by - pig_y[i];
+    if (pdx * pdx + pdy * pdy > (BIRD_R + PIG_R) * (BIRD_R + PIG_R)) continue;
+    pig_alive[i] = false;
+    lv_obj_add_flag(pigs[i], LV_OBJ_FLAG_HIDDEN);
     score++;
+    pigs_left--;
     state = State::AIMING;
     place_bird_at_anchor();
-    spawn_pig_and_block();
+    if (pigs_left <= 0) {
+      current_level = (current_level + 1) % NUM_LEVELS;
+      spawn_level(current_level);
+    }
     update_status();
     return;
   }
 
-  if (block_alive && bx + BIRD_R > block_x && bx - BIRD_R < block_x + BLOCK_W && by + BIRD_R > block_y &&
-      by - BIRD_R < block_y + BLOCK_H) {
-    block_alive = false;
-    lv_obj_add_flag(block, LV_OBJ_FLAG_HIDDEN);
-    bvx *= 0.5f;
-    bvy *= 0.5f;
+  for (int i = 0; i < MAX_BLOCKS_PER_LEVEL; i++) {
+    if (!block_alive[i]) continue;
+    if (bx + BIRD_R > block_x[i] && bx - BIRD_R < block_x[i] + BLOCK_W && by + BIRD_R > block_y[i] &&
+        by - BIRD_R < block_y[i] + BLOCK_H) {
+      block_alive[i] = false;
+      lv_obj_add_flag(blocks[i], LV_OBJ_FLAG_HIDDEN);
+      bvx *= 0.5f;
+      bvy *= 0.5f;
+    }
   }
 
   if (by > GAME_H + 20 || bx < -20 || bx > GAME_W + 20) {
@@ -315,43 +413,10 @@ void game_tick(lv_timer_t * /*t*/) {
   }
 }
 
-void on_open(lv_obj_t *parent) {
-  status_label = lv_label_create(parent);
-  lv_obj_set_style_text_font(status_label, &lv_font_montserrat_16, 0);
-  lv_obj_set_style_text_color(status_label, lv_color_hex(0xDDDDDD), 0);
-  lv_obj_align(status_label, LV_ALIGN_TOP_MID, 0, 6);
-
-  // Ground: a static strip along the large-gy edge of game space (where
-  // gravity pulls things toward), created first so everything else draws
-  // on top of it. Its child (the grass line) sits on the *small-gy* edge
-  // of the strip, which set_game_rect's rotation puts at local
-  // LEFT_MID - see game_to_px: increasing gy increases physical x, so the
-  // smaller-gy/surface edge of a ground rect ends up at the smaller-local-x
-  // side of the widget, i.e. LEFT_MID, not TOP/BOTTOM.
-  ground = lv_obj_create(parent);
-  lv_obj_remove_style_all(ground);
-  lv_obj_set_style_bg_opa(ground, LV_OPA_COVER, 0);
-  lv_obj_set_style_bg_color(ground, lv_color_hex(0x8B6B3D), 0);
-  lv_obj_clear_flag(ground, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_clear_flag(ground, LV_OBJ_FLAG_CLICKABLE);
-  set_game_rect(ground, 0, GAME_H - GROUND_H, GAME_W, GROUND_H);
-
-  lv_obj_t *grass = lv_obj_create(ground);
-  lv_obj_remove_style_all(grass);
-  lv_obj_set_size(grass, 4, LV_PCT(100));
-  lv_obj_set_style_bg_opa(grass, LV_OPA_COVER, 0);
-  lv_obj_set_style_bg_color(grass, lv_color_hex(0x5DBB4C), 0);
-  lv_obj_clear_flag(grass, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_clear_flag(grass, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_align(grass, LV_ALIGN_LEFT_MID, 0, 0);
-
-  // Block: a plain rect base plus a lighter top-edge/darker bottom-edge
-  // strip for a simple beveled "wood crate" look. Children use ordinary
-  // relative alignment (not the game_to_px rotation), so once positioned
-  // here they just ride along with the parent for free whenever it's
-  // repositioned in game space (spawn_pig_and_block never touches them
-  // again).
-  block = lv_obj_create(parent);
+// Builds one block widget (base rect + top/bottom bevel strips), hidden
+// and unpositioned - spawn_level shows/positions it per the active level.
+lv_obj_t *build_block(lv_obj_t *parent) {
+  lv_obj_t *block = lv_obj_create(parent);
   lv_obj_remove_style_all(block);
   lv_obj_set_style_bg_opa(block, LV_OPA_COVER, 0);
   lv_obj_set_style_bg_color(block, lv_color_hex(0x9C7A4C), 0);
@@ -383,9 +448,22 @@ void on_open(lv_obj_t *parent) {
   lv_obj_clear_flag(block_lo, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_align(block_lo, LV_ALIGN_BOTTOM_MID, 0, 0);
 
-  // Pig: body plus a snout (with nostrils) and a pair of eyes. Same
-  // relative-children-ride-along-for-free approach as the block above.
-  pig = lv_obj_create(parent);
+  return block;
+}
+
+// Builds one pig widget (body + snout/nostrils + eyes/pupils), hidden and
+// unpositioned - spawn_level shows/positions it per the active level.
+//
+// Snout on the ground-facing side (RIGHT_MID, same edge as the bird's
+// belly), eyes spread along the sky-facing side (LEFT_MID) - the same
+// physical-to-landscape rotation applied to the bird's face below, so
+// the pig also reads right-side-up once the panel is turned sideways.
+// Width/height and offsets are swapped/rotated accordingly (a part
+// that was wide-and-short along the old horizontal axis becomes
+// tall-and-narrow along the new one, since the visual rotation swaps
+// which physical axis reads as "horizontal" once the panel is turned).
+lv_obj_t *build_pig(lv_obj_t *parent) {
+  lv_obj_t *pig = lv_obj_create(parent);
   lv_obj_remove_style_all(pig);
   lv_obj_set_style_bg_opa(pig, LV_OPA_COVER, 0);
   lv_obj_set_style_bg_color(pig, lv_color_hex(0x30D158), 0);
@@ -395,14 +473,6 @@ void on_open(lv_obj_t *parent) {
   // See the same-purpose comment on block's sizing above.
   lv_obj_set_size(pig, static_cast<lv_coord_t>(PIG_R * 2), static_cast<lv_coord_t>(PIG_R * 2));
 
-  // Snout on the ground-facing side (RIGHT_MID, same edge as the bird's
-  // belly), eyes spread along the sky-facing side (LEFT_MID) - the same
-  // physical-to-landscape rotation applied to the bird's face below, so
-  // the pig also reads right-side-up once the panel is turned sideways.
-  // Width/height and offsets are swapped/rotated accordingly (a part
-  // that was wide-and-short along the old horizontal axis becomes
-  // tall-and-narrow along the new one, since the visual rotation swaps
-  // which physical axis reads as "horizontal" once the panel is turned).
   lv_obj_t *pig_snout = lv_obj_create(pig);
   lv_obj_remove_style_all(pig_snout);
   lv_obj_set_size(pig_snout, 13, 17);
@@ -446,6 +516,89 @@ void on_open(lv_obj_t *parent) {
     lv_obj_clear_flag(pupil, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(pupil);
   }
+
+  return pig;
+}
+
+void on_open(lv_obj_t *parent) {
+  status_label = lv_label_create(parent);
+  lv_obj_set_style_text_font(status_label, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(status_label, lv_color_hex(0xDDDDDD), 0);
+  lv_obj_align(status_label, LV_ALIGN_TOP_MID, 0, 6);
+
+  // Ground: a static strip along the large-gy edge of game space (where
+  // gravity pulls things toward), created first so everything else draws
+  // on top of it. Its child (the grass line) sits on the *small-gy* edge
+  // of the strip, which set_game_rect's rotation puts at local
+  // LEFT_MID - see game_to_px: increasing gy increases physical x, so the
+  // smaller-gy/surface edge of a ground rect ends up at the smaller-local-x
+  // side of the widget, i.e. LEFT_MID, not TOP/BOTTOM.
+  ground = lv_obj_create(parent);
+  lv_obj_remove_style_all(ground);
+  lv_obj_set_style_bg_opa(ground, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(ground, lv_color_hex(0x8B6B3D), 0);
+  lv_obj_clear_flag(ground, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(ground, LV_OBJ_FLAG_CLICKABLE);
+  set_game_rect(ground, 0, GAME_H - GROUND_H, GAME_W, GROUND_H);
+
+  lv_obj_t *grass = lv_obj_create(ground);
+  lv_obj_remove_style_all(grass);
+  lv_obj_set_size(grass, 4, LV_PCT(100));
+  lv_obj_set_style_bg_opa(grass, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(grass, lv_color_hex(0x5DBB4C), 0);
+  lv_obj_clear_flag(grass, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(grass, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_align(grass, LV_ALIGN_LEFT_MID, 0, 0);
+
+  // Block: a plain rect base plus a lighter top-edge/darker bottom-edge
+  // strip for a simple beveled "wood crate" look. Children use ordinary
+  // relative alignment (not the game_to_px rotation), so once positioned
+  // here they just ride along with the parent for free whenever it's
+  // repositioned in game space (spawn_level never touches them again).
+  for (int i = 0; i < MAX_BLOCKS_PER_LEVEL; i++) blocks[i] = build_block(parent);
+
+  // Pig: body plus a snout (with nostrils) and a pair of eyes. Same
+  // relative-children-ride-along-for-free approach as the block above.
+  for (int i = 0; i < MAX_PIGS_PER_LEVEL; i++) pigs[i] = build_pig(parent);
+
+  // Slingshot: a static wooden Y (one post, two prongs) planted at the
+  // anchor - drawn once here and never repositioned. Created before the
+  // bird below so the bird's body draws on top of the pouch area, like
+  // it's actually resting in the fork.
+  fork_post_pts[0] = game_to_px(ANCHOR_X, POST_BASE_Y);
+  fork_post_pts[1] = game_to_px(ANCHOR_X, FORK_Y);
+  fork_post = lv_line_create(parent);
+  lv_obj_set_style_line_color(fork_post, lv_color_hex(0x6B4F2E), 0);
+  lv_obj_set_style_line_width(fork_post, 4, 0);
+  lv_obj_set_style_line_rounded(fork_post, true, 0);
+  lv_line_set_points(fork_post, fork_post_pts, 2);
+
+  fork_left_pts[0] = game_to_px(ANCHOR_X, FORK_Y);
+  fork_left_pts[1] = game_to_px(ANCHOR_X - PRONG_SPREAD, PRONG_TIP_Y);
+  fork_left = lv_line_create(parent);
+  lv_obj_set_style_line_color(fork_left, lv_color_hex(0x6B4F2E), 0);
+  lv_obj_set_style_line_width(fork_left, 4, 0);
+  lv_obj_set_style_line_rounded(fork_left, true, 0);
+  lv_line_set_points(fork_left, fork_left_pts, 2);
+
+  fork_right_pts[0] = game_to_px(ANCHOR_X, FORK_Y);
+  fork_right_pts[1] = game_to_px(ANCHOR_X + PRONG_SPREAD, PRONG_TIP_Y);
+  fork_right = lv_line_create(parent);
+  lv_obj_set_style_line_color(fork_right, lv_color_hex(0x6B4F2E), 0);
+  lv_obj_set_style_line_width(fork_right, 4, 0);
+  lv_obj_set_style_line_rounded(fork_right, true, 0);
+  lv_line_set_points(fork_right, fork_right_pts, 2);
+
+  // Rubber bands - repositioned by update_bands() every time the bird
+  // moves in the sling (place_bird_at_anchor/on_pull), and hidden while
+  // the bird's actually in flight (launch()).
+  band_line_l = lv_line_create(parent);
+  lv_obj_set_style_line_color(band_line_l, lv_color_hex(0xC9A876), 0);
+  lv_obj_set_style_line_width(band_line_l, 2, 0);
+
+  band_line_r = lv_line_create(parent);
+  lv_obj_set_style_line_color(band_line_r, lv_color_hex(0xC9A876), 0);
+  lv_obj_set_style_line_width(band_line_r, 2, 0);
 
   // Bird: modeled on the classic Angry Birds "Red" - round body, cream
   // belly, orange beak, a single angry eye with an angled eyebrow, and a
@@ -557,11 +710,6 @@ void on_open(lv_obj_t *parent) {
   lv_obj_align(hint_label, LV_ALIGN_BOTTOM_MID, 0, -6);
 
 #if defined(BOARD_TOUCH_LCD147)
-  band_line = lv_line_create(parent);
-  lv_obj_set_style_line_color(band_line, lv_color_hex(0x999999), 0);
-  lv_obj_set_style_line_width(band_line, 2, 0);
-  lv_obj_add_flag(band_line, LV_OBJ_FLAG_HIDDEN);
-
   // Covers the whole panel below/above the text strips so a press
   // anywhere starts a pull (not just a precise grab on the small bird
   // widget) - see on_pull(). wants_raw_touch means the launcher's
@@ -596,9 +744,12 @@ void on_close() {
     lv_timer_del(tick_timer);
     tick_timer = nullptr;
   }
-  status_label = hint_label = bird = pig = block = ground = nullptr;
+  status_label = hint_label = bird = ground = nullptr;
+  for (int i = 0; i < MAX_PIGS_PER_LEVEL; i++) pigs[i] = nullptr;
+  for (int i = 0; i < MAX_BLOCKS_PER_LEVEL; i++) blocks[i] = nullptr;
+  fork_post = fork_left = fork_right = band_line_l = band_line_r = nullptr;
 #if defined(BOARD_TOUCH_LCD147)
-  drag_area = band_line = nullptr;
+  drag_area = nullptr;
 #else
   meter_bar = nullptr;
 #endif
