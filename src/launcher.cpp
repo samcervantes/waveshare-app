@@ -214,11 +214,15 @@ void launcher_init() {
       lv_obj_add_event_cb(tile, icon_touch_cb, LV_EVENT_SHORT_CLICKED,
                            reinterpret_cast<void *>(static_cast<intptr_t>(idx)));
 
-      lv_obj_t *sym = lv_label_create(tile);
-      lv_label_set_text(sym, app->icon_symbol);
-      lv_obj_set_style_text_font(sym, &lv_font_montserrat_32, 0);
-      lv_obj_set_style_text_color(sym, lv_color_white(), 0);
-      lv_obj_center(sym);
+      if (app->build_icon) {
+        app->build_icon(tile);
+      } else {
+        lv_obj_t *sym = lv_label_create(tile);
+        lv_label_set_text(sym, app->icon_symbol);
+        lv_obj_set_style_text_font(sym, &lv_font_montserrat_32, 0);
+        lv_obj_set_style_text_color(sym, lv_color_white(), 0);
+        lv_obj_center(sym);
+      }
 
       lv_obj_t *label = lv_label_create(block);
       lv_label_set_text(label, app->name);

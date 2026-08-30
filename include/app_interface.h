@@ -12,9 +12,19 @@ struct AppDescriptor {
   const char *name;
 
   // An LVGL symbol macro (LV_SYMBOL_...) or a short UTF-8 string used as
-  // the icon glyph, and the background color of the icon tile.
+  // the icon glyph, and the background color of the icon tile. Ignored if
+  // build_icon below is set instead.
   const char *icon_symbol;
   lv_color_t icon_color;
+
+  // Optional: draws a custom icon inside `tile` (a TILE_SIZE square with
+  // bg_color already set to icon_color, see launcher.cpp) instead of the
+  // default single icon_symbol glyph - for when no single LV_SYMBOL_*
+  // character reads as the app's purpose. See birds_app.cpp for an
+  // example: a small bird face built from a few primitive shapes, the
+  // same technique the in-game bird itself uses. Leave nullptr to use the
+  // default icon_symbol label.
+  void (*build_icon)(lv_obj_t *tile);
 
   // Builds the app's UI as children of `parent`, a full-screen container
   // the launcher creates for it. Called once each time the app is opened.

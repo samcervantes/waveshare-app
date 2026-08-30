@@ -847,12 +847,88 @@ void on_short_press() {
   }
 }
 
+// Home-screen icon: a small bird face built from the same primitive-shape
+// technique as the in-game bird above (rotated squares for the diamond
+// beak/feather tufts, a circle eye+pupil, an angled eyebrow bar) - no
+// single LV_SYMBOL_* glyph reads as "bird", so this draws one directly
+// into the icon tile instead (see build_icon in app_interface.h). `tile`
+// is a TILE_SIZE (100x100) square already colored icon_color below, which
+// doubles as the bird's body - upright/facing right, unlike the in-game
+// bird's landscape-rotated convention, since a static home-screen icon
+// has no "played sideways" orientation to match.
+void build_bird_icon(lv_obj_t *tile) {
+  auto diamond = [&](lv_coord_t cx, lv_coord_t cy, lv_coord_t size, lv_color_t color) {
+    lv_obj_t *d = lv_obj_create(tile);
+    lv_obj_remove_style_all(d);
+    lv_obj_set_size(d, size, size);
+    lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(d, color, 0);
+    lv_obj_set_style_radius(d, 2, 0);
+    lv_obj_clear_flag(d, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(d, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_pos(d, cx - size / 2, cy - size / 2);
+    lv_obj_set_style_transform_angle(d, 450, 0);  // 45deg square -> diamond
+  };
+
+  // Head tuft feathers, upper-left.
+  diamond(26, 22, 14, lv_color_hex(0x1A1A1A));
+  diamond(20, 34, 10, lv_color_hex(0x1A1A1A));
+
+  // Belly: light patch, lower-center.
+  lv_obj_t *belly = lv_obj_create(tile);
+  lv_obj_remove_style_all(belly);
+  lv_obj_set_size(belly, 52, 44);
+  lv_obj_set_style_bg_opa(belly, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(belly, lv_color_hex(0xF5D9A8), 0);
+  lv_obj_set_style_radius(belly, LV_RADIUS_CIRCLE, 0);
+  lv_obj_clear_flag(belly, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(belly, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_pos(belly, 20, 52);
+
+  // Beak, pointing right.
+  diamond(76, 58, 24, lv_color_hex(0xFFA500));
+
+  // Eye, upper-right.
+  lv_obj_t *eye = lv_obj_create(tile);
+  lv_obj_remove_style_all(eye);
+  lv_obj_set_size(eye, 26, 26);
+  lv_obj_set_style_bg_opa(eye, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(eye, lv_color_white(), 0);
+  lv_obj_set_style_radius(eye, LV_RADIUS_CIRCLE, 0);
+  lv_obj_clear_flag(eye, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(eye, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_pos(eye, 45, 19);
+
+  lv_obj_t *pupil = lv_obj_create(eye);
+  lv_obj_remove_style_all(pupil);
+  lv_obj_set_size(pupil, 12, 12);
+  lv_obj_set_style_bg_opa(pupil, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(pupil, lv_color_black(), 0);
+  lv_obj_set_style_radius(pupil, LV_RADIUS_CIRCLE, 0);
+  lv_obj_clear_flag(pupil, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(pupil, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_align(pupil, LV_ALIGN_CENTER, 4, 0);
+
+  // Eyebrow: angled slash above the eye, for the signature scowl.
+  lv_obj_t *eyebrow = lv_obj_create(tile);
+  lv_obj_remove_style_all(eyebrow);
+  lv_obj_set_size(eyebrow, 22, 6);
+  lv_obj_set_style_bg_opa(eyebrow, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(eyebrow, lv_color_hex(0x1A1A1A), 0);
+  lv_obj_set_style_radius(eyebrow, 3, 0);
+  lv_obj_clear_flag(eyebrow, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(eyebrow, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_pos(eyebrow, 41, 13);
+  lv_obj_set_style_transform_angle(eyebrow, 3350, 0);  // -25deg slant
+}
+
 }  // namespace
 
 const AppDescriptor birds_app = {
     .name = "Birds",
-    .icon_symbol = LV_SYMBOL_EJECT,
+    .icon_symbol = nullptr,  // unused - build_icon below draws the icon instead
     .icon_color = lv_color_hex(0xE8452C),
+    .build_icon = build_bird_icon,
     .on_open = on_open,
     .on_close = on_close,
     .on_short_press = on_short_press,
