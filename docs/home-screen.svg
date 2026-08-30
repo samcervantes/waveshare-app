@@ -30,18 +30,20 @@
          build_bird_icon), not a single symbol glyph. -->
     <rect x="36" y="172" width="100" height="100" rx="23" fill="#E8452C"/>
     <g transform="translate(36,172)">
-      <!-- Head tuft feathers -->
-      <g transform="translate(26,22) rotate(45)"><rect x="-7" y="-7" width="14" height="14" rx="2" fill="#1A1A1A"/></g>
-      <g transform="translate(20,34) rotate(45)"><rect x="-5" y="-5" width="10" height="10" rx="2" fill="#1A1A1A"/></g>
+      <!-- Head tuft: three feather spikes fanned like a mohawk -->
+      <g transform="translate(24,24) rotate(-45)"><rect x="-4" y="-16" width="8" height="22" rx="4" fill="#1A1A1A"/></g>
+      <g transform="translate(29,17) rotate(-15)"><rect x="-4" y="-18" width="8" height="24" rx="4" fill="#1A1A1A"/></g>
+      <g transform="translate(38,15) rotate(18)"><rect x="-3.5" y="-15" width="7" height="20" rx="3.5" fill="#1A1A1A"/></g>
       <!-- Belly -->
-      <rect x="20" y="52" width="52" height="44" rx="22" fill="#F5D9A8"/>
-      <!-- Beak -->
-      <g transform="translate(76,58) rotate(45)"><rect x="-12" y="-12" width="24" height="24" rx="3" fill="#FFA500"/></g>
-      <!-- Eye -->
-      <circle cx="58" cy="32" r="13" fill="#FFFFFF"/>
-      <circle cx="62" cy="32" r="6" fill="#000000"/>
+      <circle cx="46" cy="75" r="24" fill="#F5D9A8"/>
+      <!-- Beak, pointed -->
+      <g transform="translate(76,58) rotate(45)"><rect x="-11" y="-14" width="22" height="28" rx="3" fill="#FFA500"/></g>
+      <!-- Eye, with highlight glint -->
+      <circle cx="58" cy="34" r="14" fill="#FFFFFF"/>
+      <circle cx="62.5" cy="34" r="6.5" fill="#000000"/>
+      <circle cx="60" cy="30.5" r="2" fill="#FFFFFF"/>
       <!-- Eyebrow -->
-      <g transform="translate(52,16) rotate(-25)"><rect x="-11" y="-3" width="22" height="6" rx="3" fill="#1A1A1A"/></g>
+      <g transform="translate(52,17) rotate(-25)"><rect x="-12" y="-3.5" width="24" height="7" rx="3.5" fill="#1A1A1A"/></g>
     </g>
     <text x="86" y="292" fill="#FFFFFF" font-size="14" text-anchor="middle">Birds</text>
 
