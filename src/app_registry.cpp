@@ -3,6 +3,7 @@
 #include "apps/birds_app.h"
 #include "apps/bluetooth_app.h"
 #include "apps/bounce_app.h"
+#include "apps/breathe_app.h"
 #include "apps/clock_app.h"
 #include "apps/counter_app.h"
 #include "apps/hn_app.h"
@@ -26,10 +27,10 @@
 #endif
 
 // Launcher order: page 1 = {clock, rgb}, page 2 = {counter, bounce},
-// page 3 = {pong, reflex}, page 4 = {stopwatch, wifi}, page 5 =
-// {photos, bluetooth}, page 6 = {stack, stocks}, page 7 = {hn, snake},
-// page 8 = {birds}. (rgb is skipped on the touch board, which has no
-// NeoPixel; whack is touch board only, since it needs tap position.)
+// page 3 = {breathe, pong}, page 4 = {reflex, stopwatch}, page 5 =
+// {wifi, photos}, page 6 = {bluetooth, stack}, page 7 = {stock, hn},
+// page 8 = {snake, birds}. (rgb is skipped on the touch board, which has
+// no NeoPixel; whack is touch board only, since it needs tap position.)
 // To add an app: write src/apps/your_app.cpp/.h (copy counter_app as a
 // template), then add it here.
 const AppDescriptor *const app_registry[] = {
@@ -39,6 +40,7 @@ const AppDescriptor *const app_registry[] = {
 #endif
     &counter_app,
     &bounce_app,
+    &breathe_app,
     &pong_app,
     &reflex_app,
     &stopwatch_app,
