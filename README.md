@@ -1,6 +1,6 @@
 # Waveshare ESP32-C6 1.47" Touch Display App Launcher
 
-<img src="docs/home-screen.svg" alt="Home screen mockup: two rounded colorful app icons (Clock, Bounce) on a black background, WiFi status top-right, page dots at the bottom" width="240">
+<img src="docs/home-screen.svg" alt="Home screen mockup: two rounded colorful app icons (Photos, Birds) on a black background, WiFi status top-right, page dots at the bottom" width="240">
 
 *(Mockup of the home screen's layout/colors, generated from the launcher's actual code - not a device photo.)*
 
