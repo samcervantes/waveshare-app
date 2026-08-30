@@ -5,11 +5,9 @@
 #include "apps/bounce_app.h"
 #include "apps/breathe_app.h"
 #include "apps/clock_app.h"
-#include "apps/counter_app.h"
 #include "apps/hn_app.h"
 #include "apps/photos_app.h"
 #include "apps/pong_app.h"
-#include "apps/reflex_app.h"
 #include "apps/snake_app.h"
 #include "apps/stack_app.h"
 #include "apps/stock_app.h"
@@ -26,23 +24,22 @@
 #include "apps/whack_app.h"
 #endif
 
-// Launcher order: page 1 = {clock, rgb}, page 2 = {counter, bounce},
-// page 3 = {breathe, pong}, page 4 = {reflex, stopwatch}, page 5 =
-// {wifi, photos}, page 6 = {bluetooth, stack}, page 7 = {stock, hn},
-// page 8 = {snake, birds}. (rgb is skipped on the touch board, which has
-// no NeoPixel; whack is touch board only, since it needs tap position.)
-// To add an app: write src/apps/your_app.cpp/.h (copy counter_app as a
+// Launcher order: page 1 = {clock, rgb}, page 2 = {bounce, breathe},
+// page 3 = {pong, stopwatch}, page 4 = {wifi, photos}, page 5 =
+// {bluetooth, stack}, page 6 = {stock, hn}, page 7 = {snake, birds}.
+// (rgb is skipped on the touch board, which has no NeoPixel; whack is
+// touch board only, since it needs tap position - so the touch board's
+// pairings shift by one from the above once whack is inserted below.)
+// To add an app: write src/apps/your_app.cpp/.h (copy stopwatch_app as a
 // template), then add it here.
 const AppDescriptor *const app_registry[] = {
     &clock_app,
 #ifndef BOARD_TOUCH_LCD147
     &rgb_app,
 #endif
-    &counter_app,
     &bounce_app,
     &breathe_app,
     &pong_app,
-    &reflex_app,
     &stopwatch_app,
     &wifi_app,
     &photos_app,

@@ -4,7 +4,7 @@
 
 // The contract every launcher app implements. See CLAUDE.md for the full
 // "how to add a new app" walkthrough - the short version is: copy
-// src/apps/counter_app.cpp/.h, rename things, register it in
+// src/apps/stopwatch_app.cpp/.h, rename things, register it in
 // src/app_registry.cpp.
 struct AppDescriptor {
   // Shown under the icon on the home screen. Keep it short - the icons are

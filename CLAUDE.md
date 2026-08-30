@@ -11,8 +11,8 @@ PlatformIO environment - see the "Two board variants" section below. Read
 
 ## Adding a new app - the expected workflow when the user asks for one
 
-1. Copy `src/apps/counter_app.cpp` and `src/apps/counter_app.h` to
-   `src/apps/<name>_app.cpp/.h`. Rename `counter_app` -> `<name>_app`
+1. Copy `src/apps/stopwatch_app.cpp` and `src/apps/stopwatch_app.h` to
+   `src/apps/<name>_app.cpp/.h`. Rename `stopwatch_app` -> `<name>_app`
    everywhere (the file-scope `namespace {}` functions can keep their
    generic names like `on_open`/`on_close`/`on_short_press` - they're
    already scoped per translation unit).

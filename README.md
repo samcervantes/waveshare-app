@@ -74,8 +74,8 @@ if the monitor shows nothing, reconnect it after the board has settled.
 This is the part meant for "vibe coding" - see `CLAUDE.md` for the full
 walkthrough aimed at an AI assistant. Short version:
 
-1. Copy `src/apps/counter_app.cpp` and `.h` to `src/apps/your_app.cpp/.h`,
-   rename `counter_app` to `your_app` throughout.
+1. Copy `src/apps/stopwatch_app.cpp` and `.h` to `src/apps/your_app.cpp/.h`,
+   rename `stopwatch_app` to `your_app` throughout.
 2. Write your UI in `on_open(lv_obj_t *parent)`, clean up timers/hardware in
    `on_close()`, and optionally handle `on_short_press()`.
 3. Register it in `src/app_registry.cpp` (add the include + one array entry).
@@ -98,11 +98,9 @@ src/
   app_registry.cpp       The list of installed apps
   apps/
     clock_app.cpp/.h        Uptime digital clock
-    counter_app.cpp/.h      Tally counter
     bounce_app.cpp/.h       DVD-logo-style bouncing ball
     breathe_app.cpp/.h      Guided breathing: bar rises on inhale, falls on exhale
     pong_app.cpp/.h         Pong against a beatable AI
-    reflex_app.cpp/.h       Timing/reflex game: stop the sweeping bar in the zone
     stopwatch_app.cpp/.h    Start/stop stopwatch
     wifi_app.cpp/.h         Scans nearby WiFi networks, shows signal strength
     photos_app.cpp/.h       Viewer for a handful of built-in CC0 photos
