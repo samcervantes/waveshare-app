@@ -1,10 +1,13 @@
-# Waveshare ESP32-C6-LCD-1.47 launcher - notes for Claude
+# Waveshare ESP32-C6 Touch Display launcher - notes for Claude
 
-This is a PlatformIO/Arduino firmware project: an iPhone-like app launcher
-for a non-touch 172x320 ST7789 display, navigated with a single physical
-button. Read `README.md` first for the user-facing overview and the
-one-button interaction model (short press = move/act, long press = launch/
-go home).
+This is a PlatformIO/Arduino firmware project: an iPhone-like app launcher.
+The primary target hardware is the **Waveshare ESP32-C6 1.47" Touch
+Display** (172x320, JD9853 driver, AXS5106L touch controller) - tap icons
+to open apps, tap/swipe within an app for its per-app action, BOOT button
+for a quick press-to-go-home. The codebase also still supports the older
+plain (non-touch) Waveshare ESP32-C6-LCD-1.47 board via a second
+PlatformIO environment - see the "Two board variants" section below. Read
+`README.md` first for the user-facing overview.
 
 ## Adding a new app - the expected workflow when the user asks for one
 
@@ -30,9 +33,16 @@ go home).
    array. That's the only place layout/paging code needs to change - the
    launcher (`src/launcher.cpp`) builds pages/icons/dots dynamically from
    `APP_COUNT`, up to `MAX_APPS = 16` (8 pages of 2).
-6. Build with `pio run`. Flash with
-   `pio run -t upload --upload-port $(pio device list | grep -o '/dev/cu.usbmodem[0-9]*' | head -1)`
-   (or just `pio run -t upload` if only one board is plugged in).
+6. Build with `pio run -e waveshare-esp32c6-touch-lcd147`. Flash with
+   `pio run -e waveshare-esp32c6-touch-lcd147 -t upload --upload-port $(pio device list | grep -o '/dev/cu.usbmodem[0-9]*' | head -1)`
+   (or drop `--upload-port` if only one board is plugged in). **Always
+   pass `-e waveshare-esp32c6-touch-lcd147` explicitly** - `pio run`/
+   `pio run -t upload` with no `-e` builds and flashes *both* board
+   environments back-to-back onto whatever's plugged in, and the
+   non-touch env that lands last uses different display pins (wrong
+   SCLK/MOSI/RST/backlight GPIOs for this board), leaving the screen
+   dark. This has actually happened - see the "Two board variants"
+   section below.
 
 Icons use `LV_SYMBOL_*` macros (built into the Montserrat fonts LVGL ships)
 rather than custom bitmaps/emoji - there's no real icon set for this
@@ -48,7 +58,8 @@ launcher.cpp -> owns the LVGL screen; routes ButtonEvent to either the
                 home-screen cursor/paging, or the active app's on_short_press
                 / global "long press = home"
 app_registry.cpp -> static list of AppDescriptor* (src/apps/*)
-display.cpp  -> LovyanGFX (ST7789) init + LVGL flush callback glue
+display.cpp  -> LovyanGFX (JD9853/ST7789) init + LVGL flush callback glue
+touch.cpp    -> AXS5106L touch controller driver (touch board only)
 ```
 
 `AppDescriptor` (in `include/app_interface.h`) is the entire plugin
@@ -56,18 +67,42 @@ contract: `name`, `icon_symbol`, `icon_color`, `on_open`, `on_close`,
 `on_short_press`. Nothing else needs to know an app exists besides the one
 line in `app_registry.cpp`.
 
+## Two board variants
+
+`platformio.ini` defines two environments, selected by `-e`:
+
+- `waveshare-esp32c6-touch-lcd147` - **the primary target, and the board
+  actually in use.** AXS5106L capacitive touch (I2C) is the main
+  interface; `-DBOARD_TOUCH_LCD147` gates touch-specific code
+  (`src/touch.cpp`, `whack_app`, the touch overlay/gesture handling in
+  `launcher.cpp`). No onboard NeoPixel, so `rgb_app` is excluded (see
+  `app_registry.cpp`).
+- `waveshare-esp32c6-lcd147` - the older plain (non-touch) board. Still
+  supported by the shared codebase, kept building/working, but not what's
+  physically plugged in for this project - don't assume it's the default.
+
+The two boards' display pins differ (touch: SCLK1/MOSI2/RST22/BL23;
+non-touch: SCLK7/MOSI6/RST21/BL22 - see `include/config.h`), which is why
+flashing the wrong environment doesn't just misbehave, it leaves the
+screen dark (wrong backlight GPIO) - always pass `-e
+waveshare-esp32c6-touch-lcd147` explicitly rather than relying on
+`pio run`'s default of building/uploading every environment.
+
 ## Hardware facts worth remembering
 
-- **Only one input exists**: BOOT button on GPIO9 (`PIN_BOOT_BUTTON` in
-  `include/config.h`). RESET is a hard reset, not software-readable. There
-  is no touch controller on this board variant - don't add touch-input
-  code.
-- GPIO8 is the NeoPixel RGB LED data pin, not a button (easy to confuse
-  with GPIO9 - they're adjacent strapping pins on the ESP32-C6).
-- Display pins/offsets in `config.h` (SCLK7/MOSI6/CS14/DC15/RST21/BL22,
-  `offset_x=34`) were confirmed against a working reference sketch for this
-  exact board - don't change them without testing on hardware, ST7789
-  offset values are notoriously board-specific.
+- Input: the AXS5106L touch controller (I2C, pins in `config.h`) for the
+  primary tap/swipe interface, plus the BOOT button on GPIO9
+  (`PIN_BOOT_BUTTON`) as a physical quick-press-home. RESET is a hard
+  reset, not software-readable.
+- GPIO8 is the NeoPixel RGB LED data pin *on the non-touch board only* -
+  on the touch board GPIO8 is unrelated (no onboard NeoPixel there).
+  Easy to confuse with GPIO9 on the non-touch board - they're adjacent
+  strapping pins on the ESP32-C6.
+- Display pins/offsets in `config.h` (touch board:
+  SCLK1/MOSI2/CS14/DC15/RST22/BL23, `offset_x=34`) were confirmed against
+  a working reference for this exact board - don't change them without
+  testing on hardware, ST7789/JD9853 offset values are notoriously
+  board-specific.
 - 512KB SRAM total, no PSRAM. LVGL uses partial draw buffers (40 rows), not
   a full framebuffer - keep that pattern if you touch `display.cpp`.
 
