@@ -150,16 +150,19 @@ struct Level {
 // board. Cycles back to level 0 after the last one - birds_remaining
 // running out is what actually ends the run, not the level list.
 constexpr Level LEVELS[] = {
-    // 1: one pig behind a single block - the original layout.
-    {1, {{230, 90}}, 1, {{170, 79}}},
+    // 1: one pig behind a single block - the original layout. Pushed
+    // toward PLAY_X_MAX (the pigs used to sit too close to ANCHOR_X,
+    // making the shot too easy) - block shifted along with its pig so it
+    // still guards the same way.
+    {1, {{280, 90}}, 1, {{220, 79}}},
     // 2: two pigs spread apart, one block guarding the nearer one.
-    {2, {{190, 50}, {230, 130}}, 1, {{165, 70}}},
+    {2, {{240, 50}, {280, 130}}, 1, {{215, 70}}},
     // 3: one pig behind a two-block tower.
-    {1, {{250, 100}}, 2, {{190, 144}, {190, 122}}},
+    {1, {{288, 100}}, 2, {{228, 144}, {228, 122}}},
     // 4: two pigs, each with its own block.
-    {2, {{190, 40}, {260, 140}}, 2, {{160, 30}, {220, 125}}},
+    {2, {{220, 40}, {290, 140}}, 2, {{190, 30}, {250, 125}}},
     // 5: two pigs close together, one block up front.
-    {2, {{270, 70}, {280, 120}}, 1, {{230, 95}}},
+    {2, {{280, 70}, {290, 120}}, 1, {{240, 95}}},
 };
 constexpr int NUM_LEVELS = sizeof(LEVELS) / sizeof(LEVELS[0]);
 
