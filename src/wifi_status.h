@@ -65,3 +65,16 @@ uint32_t wifi_status_connect_started_ms();
 // back in the same state it was in before, rather than leaving it
 // disconnected.
 void wifi_status_reconnect();
+
+// Pins connection attempts to one specific network, stopping the
+// automatic PRIMARY/FALLBACK alternation - poll() will keep retrying
+// just this one (re-issuing WiFi.begin() every WIFI_PRIMARY_TIMEOUT_MS
+// as usual) instead of giving up and trying the other one. Used by the
+// WiFi app's Scan page: tapping a row for a network matching
+// WIFI_SSID/WIFI_SSID_FALLBACK pins to it, so a spotty network doesn't
+// keep getting abandoned mid-attempt in favor of the other one. Runtime
+// state only (resets to auto-alternating on reboot); stays pinned across
+// closing/reopening the WiFi app until a different network is pinned -
+// there's no explicit unpin, since nothing here currently needs to go
+// back to auto-alternating once a preference's been set.
+void wifi_status_pin_network(WifiNetwork net);

@@ -29,6 +29,7 @@ bool ntp_configured = false;
 bool time_synced = false;
 uint32_t connect_started_ms = 0;
 bool tried_fallback = false;
+bool pinned = false;
 WifiNetwork active_network = WifiNetwork::PRIMARY;
 int last_primary_wl_status = WL_IDLE_STATUS;
 int last_fallback_wl_status = WL_IDLE_STATUS;
@@ -66,14 +67,24 @@ void poll(lv_timer_t * /*t*/) {
     // the board (see wifi_status_init's comment): each WiFi.begin() call
     // here is at least WIFI_PRIMARY_TIMEOUT_MS apart, same spacing as the
     // one-shot version this replaced.
+    //
+    // Unless pinned (see wifi_status_pin_network) - then skip the
+    // alternation and just retry the same network again, since the user
+    // has explicitly asked to stick with it rather than have a slow/
+    // spotty connection keep getting abandoned for the other one.
     if (active_network == WifiNetwork::PRIMARY) {
       last_primary_wl_status = WiFi.status();
-      tried_fallback = true;
-      active_network = WifiNetwork::FALLBACK;
-      WiFi.begin(WIFI_SSID_FALLBACK, WIFI_PASSWORD_FALLBACK);
+      if (!pinned) {
+        tried_fallback = true;
+        active_network = WifiNetwork::FALLBACK;
+      }
     } else {
       last_fallback_wl_status = WiFi.status();
-      active_network = WifiNetwork::PRIMARY;
+      if (!pinned) active_network = WifiNetwork::PRIMARY;
+    }
+    if (active_network == WifiNetwork::FALLBACK) {
+      WiFi.begin(WIFI_SSID_FALLBACK, WIFI_PASSWORD_FALLBACK);
+    } else {
       WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     }
     connect_started_ms = millis();
@@ -136,6 +147,18 @@ int wifi_status_last_fallback_wl_status() {
 
 uint32_t wifi_status_connect_started_ms() {
   return connect_started_ms;
+}
+
+void wifi_status_pin_network(WifiNetwork net) {
+  pinned = true;
+  active_network = net;
+  if (net == WifiNetwork::FALLBACK) {
+    tried_fallback = true;
+    WiFi.begin(WIFI_SSID_FALLBACK, WIFI_PASSWORD_FALLBACK);
+  } else {
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  }
+  connect_started_ms = millis();
 }
 
 void wifi_status_reconnect() {
