@@ -321,6 +321,7 @@ void update_status_page(lv_timer_t * /*t*/) {
 // polling WiFi.scanComplete() the same way the rest of this app's timers
 // poll state, avoids blocking entirely.
 void run_scan() {
+  Serial.println("[wifi_app] run_scan: disconnecting radio to scan");
   lv_label_set_text(status_label, "Scanning...");
   for (size_t i = 0; i < MAX_ROWS; i++) lv_obj_add_flag(row_container[i], LV_OBJ_FLAG_HIDDEN);
 
@@ -366,7 +367,13 @@ void poll_scan(lv_timer_t * /*t*/) {
     lv_label_set_text(status_label, n == 0 ? "No networks found" : "Scan failed");
     WiFi.scanDelete();
     if (has_target) update_fox_hunt_reading(false, 0);
-    if (page == Page::FOX_HUNT && has_target) run_scan();
+    if (page == Page::FOX_HUNT && has_target) {
+      run_scan();
+    } else {
+      // Hand the radio back right away rather than leaving it disconnected
+      // - see the comment on the same call below.
+      wifi_status_reconnect();
+    }
     return;
   }
 
@@ -435,7 +442,22 @@ void poll_scan(lv_timer_t * /*t*/) {
 
   WiFi.scanDelete();
 
-  if (page == Page::FOX_HUNT && has_target) run_scan();
+  if (page == Page::FOX_HUNT && has_target) {
+    run_scan();
+  } else {
+    // run_scan() disconnected the radio to scan (see its own comment);
+    // wifi_status.cpp's own reconnect logic doesn't know that happened
+    // and won't retry for up to WIFI_PRIMARY_TIMEOUT_MS since it
+    // still thinks it's within the grace period from whenever it last
+    // saw a connection - so without this, the radio just sits
+    // disconnected after every scan until that timer happens to catch
+    // up, which is what made WiFi feel unreliable/slow to (re)connect
+    // whenever this app had been opened. Handing it back immediately
+    // once we're done with it (matching on_close's same call, just now
+    // also after each individual scan, not only when the app closes)
+    // fixes that instead of relying on lucky timing.
+    wifi_status_reconnect();
+  }
 }
 
 void on_open(lv_obj_t *parent) {

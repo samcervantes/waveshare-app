@@ -34,8 +34,15 @@ enum class WifiNetwork { PRIMARY, FALLBACK };
 WifiNetwork wifi_status_active_network();
 
 // How long wifi_status gives whichever network is active before trying
-// the other one - see wifi_status.cpp's poll().
-constexpr uint32_t WIFI_PRIMARY_TIMEOUT_MS = 15000;
+// the other one - see wifi_status.cpp's poll(). Deliberately not too
+// short: switching networks needs an explicit WiFi.disconnect() first
+// (see begin_active_network's comment), and this project has a documented
+// history of a disconnect()+begin() retry loop destabilizing the WiFi
+// driver badly enough to crash the board over a long run when run too
+// frequently (see wifi_status_init's comment) - 30s keeps this well
+// short of feeling broken while halving how often that pattern repeats
+// compared to the 15s this used to be.
+constexpr uint32_t WIFI_PRIMARY_TIMEOUT_MS = 30000;
 
 // True once the fallback has been tried at least once this boot (whether
 // or not it's currently active/connected) - used only to distinguish

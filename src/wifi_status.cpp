@@ -42,9 +42,56 @@ lv_color_t rssi_to_color(int rssi) {
   return lv_color_hex(0xFF453A);                   // weak
 }
 
+// Issues WiFi.begin() for whichever network active_network currently is.
+// Always disconnects first - reading the actual Arduino-ESP32 driver
+// source (STAClass::connect() in STA.cpp) confirms WiFi.begin() only
+// auto-disconnects if the STA is fully WL_CONNECTED; if it's still
+// mid-handshake to a *different* network (exactly the state
+// setAutoReconnect(true) keeps it in while it keeps retrying whatever
+// was last configured, e.g. a Primary that's out of range), begin() for
+// a new network gets silently rejected by the IDF driver instead (
+// confirmed via serial: "sta is connecting, cannot set config" /
+// ESP_ERR_WIFI_STATE) - our own active_network/pinned state updates
+// regardless, so nothing here looked wrong, but the radio never actually
+// got the new command. This is exactly why poll()'s automatic
+// PRIMARY->FALLBACK alternation below silently never took effect on its
+// own (Primary's own auto-reconnect kept the STA permanently "busy"),
+// while manually visiting/leaving the WiFi app's Fox Hunt page worked
+// around it purely by accident (it disconnects to scan, which happens to
+// clear the same busy state).
+//
+// This does mean every caller here - including poll()'s own periodic
+// retry - now does the disconnect()+begin() pairing that a documented
+// past version of this file ran too frequently and crashed the board
+// with (see wifi_status_init's comment). Mitigated, not eliminated: see
+// WIFI_PRIMARY_TIMEOUT_MS's comment for why that interval was widened
+// alongside this change. Worth watching for instability over a long
+// uptime if this ever needs revisiting.
+void begin_active_network(const char *reason) {
+  WiFi.disconnect();
+  if (active_network == WifiNetwork::FALLBACK) {
+    Serial.printf("[wifi_status] %s -> FALLBACK (%s)\n", reason, WIFI_SSID_FALLBACK);
+    WiFi.begin(WIFI_SSID_FALLBACK, WIFI_PASSWORD_FALLBACK);
+  } else {
+    Serial.printf("[wifi_status] %s -> PRIMARY (%s)\n", reason, WIFI_SSID);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  }
+  connect_started_ms = millis();
+}
+
 void poll(lv_timer_t * /*t*/) {
   bool connected = (WiFi.status() == WL_CONNECTED);
   lv_obj_set_style_text_color(icon, connected ? rssi_to_color(WiFi.RSSI()) : lv_color_hex(0x555555), 0);
+
+  static bool was_connected = false;
+  if (connected != was_connected) {
+    was_connected = connected;
+    if (connected) {
+      Serial.printf("[wifi_status] connected to %s, rssi=%d\n", WiFi.SSID().c_str(), WiFi.RSSI());
+    } else {
+      Serial.printf("[wifi_status] disconnected, status=%d\n", WiFi.status());
+    }
+  }
 
   if (connected) {
     // Keep resetting this while connected, rather than only setting it at
@@ -62,11 +109,12 @@ void poll(lv_timer_t * /*t*/) {
     // elsewhere, and vice versa for the fallback), so if whichever one is
     // currently active hasn't connected within WIFI_PRIMARY_TIMEOUT_MS,
     // try the other one instead - and keep alternating for as long as
-    // neither connects. This still isn't the hand-rolled tight retry loop
-    // that previously destabilized the WiFi driver badly enough to crash
-    // the board (see wifi_status_init's comment): each WiFi.begin() call
-    // here is at least WIFI_PRIMARY_TIMEOUT_MS apart, same spacing as the
-    // one-shot version this replaced.
+    // neither connects. begin_active_network's disconnect()+begin() pair
+    // is the same shape as the hand-rolled loop that previously
+    // destabilized the WiFi driver badly enough to crash the board (see
+    // its own comment and wifi_status_init's) - kept survivable by
+    // spacing, not by avoiding the pattern: each call here is at least
+    // WIFI_PRIMARY_TIMEOUT_MS apart, never tighter.
     //
     // Unless pinned (see wifi_status_pin_network) - then skip the
     // alternation and just retry the same network again, since the user
@@ -82,12 +130,7 @@ void poll(lv_timer_t * /*t*/) {
       last_fallback_wl_status = WiFi.status();
       if (!pinned) active_network = WifiNetwork::PRIMARY;
     }
-    if (active_network == WifiNetwork::FALLBACK) {
-      WiFi.begin(WIFI_SSID_FALLBACK, WIFI_PASSWORD_FALLBACK);
-    } else {
-      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    }
-    connect_started_ms = millis();
+    begin_active_network("poll retry");
   }
 
   if (!connected) return;
@@ -152,13 +195,8 @@ uint32_t wifi_status_connect_started_ms() {
 void wifi_status_pin_network(WifiNetwork net) {
   pinned = true;
   active_network = net;
-  if (net == WifiNetwork::FALLBACK) {
-    tried_fallback = true;
-    WiFi.begin(WIFI_SSID_FALLBACK, WIFI_PASSWORD_FALLBACK);
-  } else {
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  }
-  connect_started_ms = millis();
+  if (net == WifiNetwork::FALLBACK) tried_fallback = true;
+  begin_active_network("pin");
 }
 
 void wifi_status_reconnect() {
@@ -169,10 +207,5 @@ void wifi_status_reconnect() {
   // leaving the radio off/disconnected until the next reboot.
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
-  if (active_network == WifiNetwork::FALLBACK) {
-    WiFi.begin(WIFI_SSID_FALLBACK, WIFI_PASSWORD_FALLBACK);
-  } else {
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  }
-  connect_started_ms = millis();
+  begin_active_network("reconnect");
 }
