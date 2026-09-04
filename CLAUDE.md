@@ -70,6 +70,7 @@ launcher.cpp -> owns the LVGL screen; routes ButtonEvent to either the
 app_registry.cpp -> static list of AppDescriptor* (src/apps/*)
 display.cpp  -> LovyanGFX (JD9853/ST7789) init + LVGL flush callback glue
 touch.cpp    -> AXS5106L touch controller driver (touch board only)
+imu.cpp      -> QMI8658A 6-axis IMU driver (touch board only)
 ```
 
 `AppDescriptor` (in `include/app_interface.h`) is the entire plugin
@@ -104,6 +105,14 @@ waveshare-esp32c6-touch-lcd147` explicitly rather than relying on
   primary tap/swipe interface, plus the BOOT button on GPIO9
   (`PIN_BOOT_BUTTON`) as a physical quick-press-home. RESET is a hard
   reset, not software-readable.
+- The QMI8658A 6-axis IMU (accel+gyro) shares the touch controller's I2C
+  bus (same `PIN_TOUCH_SDA`/`PIN_TOUCH_SCL`, address 0x6B) - `imu.cpp`
+  only calls `Wire.begin()` once, from `touch_init()`; `imu_init()` reuses
+  that bus. Register map/init sequence came from Waveshare's own QMI8658
+  demo for this exact board (bundled FastIMU library in
+  `ESP32-C6-Touch-LCD-1.47-Demo.zip` off their wiki), not the general QST
+  datasheet - see `imu.cpp`'s header comment. Touch-board-only, like
+  `touch.cpp`.
 - GPIO8 is the NeoPixel RGB LED data pin *on the non-touch board only* -
   on the touch board GPIO8 is unrelated (no onboard NeoPixel there).
   Easy to confuse with GPIO9 on the non-touch board - they're adjacent

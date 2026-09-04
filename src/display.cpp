@@ -6,6 +6,7 @@
 #include <lvgl.h>
 
 #if defined(BOARD_TOUCH_LCD147)
+#include "imu.h"
 #include "touch.h"
 #endif
 
@@ -120,6 +121,7 @@ void display_init() {
 
 #if defined(BOARD_TOUCH_LCD147)
   touch_init();
+  imu_init();  // shares touch_init()'s already-begun Wire bus (see config.h)
 
   lv_indev_drv_init(&indev_drv);
   indev_drv.type = LV_INDEV_TYPE_POINTER;

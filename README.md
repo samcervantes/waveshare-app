@@ -17,7 +17,8 @@ BOOT button as a quick way home from inside an app.
   172x320, JD9853 driver (speaks the same command set as ST7789)
 - AXS5106L capacitive touch controller - primary interface: tap icons to
   open apps, tap/drag within an app for its per-app action.
-- QMI8658A IMU (not wired up yet).
+- QMI8658A IMU (6-axis accel/gyro) - driven by `src/imu.cpp`, visualized
+  in the Gyro app.
 - The **BOOT button** (GPIO9) is a quick press-to-go-home from inside an
   app; RESET just restarts the chip.
 - No onboard NeoPixel on this board variant.
@@ -114,5 +115,6 @@ src/
     hn_app.cpp/.h           "News": Hacker News front-page stories, plus a
                             swipeable BBC World headlines page (touch board)
     birds_app.cpp/.h        Angry-Birds-style slingshot
+    gyro_app.cpp/.h         Attitude indicator driven by the IMU (touch board only)
     rgb_app.cpp/.h          NeoPixel color cycler (non-touch board only)
 ```
