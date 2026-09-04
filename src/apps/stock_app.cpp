@@ -399,12 +399,6 @@ void on_open(lv_obj_t *parent) {
   lv_obj_set_style_text_color(range_label, lv_color_hex(0xDDDDDD), 0);
   lv_obj_align(range_label, LV_ALIGN_TOP_MID, 0, 98);
 
-  timescale_label = lv_label_create(root);
-  lv_obj_set_style_text_font(timescale_label, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(timescale_label, lv_color_hex(0x0A84FF), 0);
-  lv_obj_align(timescale_label, LV_ALIGN_TOP_RIGHT, -10, 122);
-  update_timescale_label();
-
   chart = lv_chart_create(root);
   lv_obj_set_size(chart, 156, 140);
   lv_obj_align(chart, LV_ALIGN_TOP_MID, 0, 122);
@@ -417,6 +411,22 @@ void on_open(lv_obj_t *parent) {
   lv_obj_clear_flag(chart, LV_OBJ_FLAG_CLICKABLE);  // see the comment above refresh_tap_cb's registration
   chart_series = lv_chart_add_series(chart, lv_color_hex(0x0A84FF), LV_CHART_AXIS_PRIMARY_Y);
   lv_obj_add_flag(chart, LV_OBJ_FLAG_HIDDEN);  // shown once real data arrives
+
+  // Which timescale (1D/1W/1M/1Y) is currently shown - moved below the
+  // chart and enlarged (was a small LV_ALIGN_TOP_RIGHT label overlapping
+  // the chart's corner) since it was reported hard to tell which scale
+  // was active at a glance.
+  timescale_label = lv_label_create(root);
+  lv_obj_set_style_text_font(timescale_label, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_color(timescale_label, lv_color_hex(0x0A84FF), 0);
+  // Text has to be set before aligning, not after - align_to reads the
+  // label's current (content-based) width, which doesn't reflect new
+  // text until a layout pass happens; setting it after would center an
+  // empty box and leave the real text growing right from that spot
+  // instead of actually centered (same LVGL gotcha as the News app's
+  // detail view - see its own comment for the fuller explanation).
+  update_timescale_label();
+  lv_obj_align_to(timescale_label, chart, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
 
   lv_obj_t *hint = lv_label_create(root);
   lv_label_set_text(hint, "swipe: scale  |  " ACTION_WORD ": refresh  |  " HOME_HINT);
