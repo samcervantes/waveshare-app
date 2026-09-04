@@ -84,9 +84,9 @@ line in `app_registry.cpp`.
 - `waveshare-esp32c6-touch-lcd147` - **the primary target, and the board
   actually in use.** AXS5106L capacitive touch (I2C) is the main
   interface; `-DBOARD_TOUCH_LCD147` gates touch-specific code
-  (`src/touch.cpp`, `whack_app`, the touch overlay/gesture handling in
-  `launcher.cpp`). No onboard NeoPixel, so `rgb_app` is excluded (see
-  `app_registry.cpp`).
+  (`src/touch.cpp`, the touch overlay/gesture handling in `launcher.cpp`,
+  and touch-only extra pages in apps like `wifi_app`/`hn_app`). No
+  onboard NeoPixel, so `rgb_app` is excluded (see `app_registry.cpp`).
 - `waveshare-esp32c6-lcd147` - the older plain (non-touch) board. Still
   supported by the shared codebase, kept building/working, but not what's
   physically plugged in for this project - don't assume it's the default.

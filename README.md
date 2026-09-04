@@ -108,13 +108,11 @@ src/
     stopwatch_app.cpp/.h    Start/stop stopwatch
     wifi_app.cpp/.h         Scans nearby WiFi networks, shows signal strength
     photos_app.cpp/.h       Viewer for a handful of built-in CC0 photos
-    whack_app.cpp/.h        Whack-a-mole (touch board only - tap the target)
     bluetooth_app.cpp/.h    Scans nearby BLE devices
     stack_app.cpp/.h        Block-stacking game
     stock_app.cpp/.h        Stock price chart with swipeable timescales
     hn_app.cpp/.h           "News": Hacker News front-page stories, plus a
                             swipeable BBC World headlines page (touch board)
-    snake_app.cpp/.h        Classic grid snake
     birds_app.cpp/.h        Angry-Birds-style slingshot
     rgb_app.cpp/.h          NeoPixel color cycler (non-touch board only)
 ```
