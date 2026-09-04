@@ -50,6 +50,16 @@ project, so pick whichever symbol reads closest to the app's purpose (see
 existing apps for examples: `LV_SYMBOL_LOOP`, `LV_SYMBOL_CHARGE`,
 `LV_SYMBOL_PLUS`, `LV_SYMBOL_SHUFFLE`).
 
+**Text color: default to `lv_color_white()` for anything the user needs to
+read normally** (headings, body/status text, list items). The screen
+background is black, and dark/muted colors on it - `0x555555`-style grays,
+but also darker saturated colors like a deep red (`0xBB1919`) - read as
+low-contrast and hard to see on this specific display, not just "a bit
+dim." This has been raised as a repeated problem, so don't reach for a
+dim color for primary content text; save dim grays (the existing
+`0x555555` hint-text convention, e.g. `HOME_HINT` labels) for genuinely
+secondary/de-emphasized text only, and when in doubt, use white.
+
 ## Architecture
 
 ```
