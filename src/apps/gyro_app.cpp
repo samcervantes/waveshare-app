@@ -204,8 +204,14 @@ void update_level(const ImuSample &s) {
 // redraw - see the file header comment for the projection/shading math
 // and why this is a plain pixel buffer rather than a rotated LVGL object.
 void render_ball() {
-  float pitch_rad = ball_pitch_deg * RAD_PER_DEG;
-  float roll_rad = ball_roll_deg * RAD_PER_DEG;
+  // Pitch/roll swapped per user feedback on real hardware - the ball's
+  // rotation axes read backwards relative to the Level page's labels.
+  // Pitch's sign has been flipped twice since - first because it read
+  // backwards, then again because changing roll's rotation axis (see
+  // rz_roll below) flipped pitch's effective direction back along with
+  // it.
+  float pitch_rad = ball_roll_deg * RAD_PER_DEG;
+  float roll_rad = ball_pitch_deg * RAD_PER_DEG;
   float cos_roll = cosf(roll_rad), sin_roll = sinf(roll_rad);
   float cos_pitch = cosf(pitch_rad), sin_pitch = sinf(pitch_rad);
   // Light direction is a fixed, already-normalized-ish unit vector
@@ -228,15 +234,18 @@ void render_ball() {
         // orthographic-projection sphere formula.
         float nz = sqrtf(1.0f - r2);
         // Two plain 2D rotations of floats already in hand (not an LVGL
-        // transform): roll rotates (nx,ny) around the axis pointing at
-        // the viewer, then pitch rotates the result's y against nz - same
-        // roll-then-pitch order and the same accelerometer-derived
-        // angles as the Level page, so a motion that reads as "roll" or
-        // "pitch" there looks the same way here.
-        float rx = nx * cos_roll - ny * sin_roll;
-        float ry_roll = nx * sin_roll + ny * cos_roll;
-        float ry = ry_roll * cos_pitch - nz * sin_pitch;
-        float rz = ry_roll * sin_pitch + nz * cos_pitch;
+        // transform). Roll rotates (nx,nz) around the vertical (y) axis -
+        // tipping the ball around its own vertical axis, the way rolling
+        // a marble sideways would, rather than spinning it flat like a
+        // coin (an earlier version rotated (nx,ny) around the viewer-
+        // facing axis instead, which is what produced that "spins flat"
+        // look reported on real hardware). Pitch then rotates (ny, the
+        // roll-rotated z) around the horizontal (x) axis, tipping the
+        // ball toward/away from the viewer.
+        float rx = nx * cos_roll + nz * sin_roll;
+        float rz_roll = -nx * sin_roll + nz * cos_roll;
+        float ry = ny * cos_pitch + rz_roll * sin_pitch;
+        float rz = -ny * sin_pitch + rz_roll * cos_pitch;
 
         // Cheap "checkerboard globe" pattern in the rotated sphere
         // coordinates - not real continent shapes (an actual land/ocean
