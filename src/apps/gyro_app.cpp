@@ -5,6 +5,7 @@
 #include <math.h>
 
 #include "config.h"
+#include "earth_data/earth.h"
 #include "imu.h"
 
 // Two swipeable pages, both driven by the QMI8658A (imu.cpp/.h):
@@ -44,11 +45,13 @@
 // it as a point on a sphere seen in orthographic projection (nx,ny are the
 // pixel's position scaled to [-1,1], nz = sqrt(1-nx^2-ny^2) is how far
 // toward the viewer that point on the sphere surface is), rotate that
-// point around the vertical axis by the current spin angle, pick a
-// land/ocean color from a cheap checkerboard-on-a-sphere pattern, and
-// shade it by how much it faces a fixed light direction. This still
-// avoids LVGL's transform_angle/layer system entirely (see above) - it's
-// plain per-pixel writes into a canvas buffer, not a rotated LVGL object.
+// point by the device's pitch/roll, convert the rotated point to a
+// latitude/longitude pair and sample a real NASA public-domain earth
+// texture at that spot (see earth_data/earth.h - a first version used a
+// procedural checkerboard pattern instead, reported "lame"), and shade it
+// by how much it faces a fixed light direction. This still avoids LVGL's
+// transform_angle/layer system entirely (see above) - it's plain
+// per-pixel writes into a canvas buffer, not a rotated LVGL object.
 //
 // The canvas buffer (ball_canvas_buf below) is a fixed-size global array,
 // not a runtime heap allocation - same reasoning as avoiding the rotated-
@@ -114,6 +117,14 @@ lv_obj_t *bubble = nullptr;
 lv_obj_t *pitch_roll_label = nullptr;
 lv_obj_t *accel_label = nullptr;
 lv_obj_t *gyro_label = nullptr;
+
+// Precomputed once in on_open (see below), not called as powf() per pixel
+// per channel in render_ball - a texture's channel value only has 256
+// possible inputs, so a 256-entry table computed once up front is exact
+// and free at render time, versus 3 powf() calls (one of the more
+// expensive software-float functions on this FPU-less chip) for every one
+// of the ~7800 pixels inside the sphere, every render.
+uint8_t gamma_lut[256];
 
 lv_obj_t *ball_canvas = nullptr;
 // Permanent static storage, not heap - see the file header comment.
@@ -214,10 +225,6 @@ void render_ball() {
   float roll_rad = ball_pitch_deg * RAD_PER_DEG;
   float cos_roll = cosf(roll_rad), sin_roll = sinf(roll_rad);
   float cos_pitch = cosf(pitch_rad), sin_pitch = sinf(pitch_rad);
-  // Light direction is a fixed, already-normalized-ish unit vector
-  // pointing up and to the left of the viewer - not derived from the IMU,
-  // just a constant "studio light" for the shading to read as 3D.
-  constexpr float LIGHT_X = -0.5f, LIGHT_Y = -0.6f, LIGHT_Z = 0.62f;
 
   for (int py = 0; py < BALL_SIZE; py++) {
     float ny = (py - BALL_RADIUS + 0.5f) / BALL_RADIUS;
@@ -247,37 +254,46 @@ void render_ball() {
         float ry = ny * cos_pitch + rz_roll * sin_pitch;
         float rz = -ny * sin_pitch + rz_roll * cos_pitch;
 
-        // Cheap "checkerboard globe" pattern in the rotated sphere
-        // coordinates - not real continent shapes (an actual land/ocean
-        // map would need a lookup table this board doesn't have room
-        // for), but the alternating bands read as a textured 3D globe
-        // and correctly move with the rotation since they're computed
-        // from the rotated (rx,ry,rz), not the fixed (nx,ny,nz).
-        bool lat_band = (static_cast<int>(floorf(ry * 6.0f)) & 1) != 0;
-        bool lon_band = (static_cast<int>(floorf(rx * 6.0f)) & 1) != 0;
-        bool land = lat_band != lon_band;
+        // Sample the real earth texture (earth_data/earth.h) instead of a
+        // procedural pattern - reported "lame" as a checkerboard. (rx,ry,rz)
+        // is a point on a unit sphere, so this is the standard spherical-
+        // to-equirectangular mapping: ry (the rotated "up" component) gives
+        // latitude via asin, rx/rz (the two components perpendicular to
+        // "up") give longitude via atan2.
+        float lat = asinf(ry < -1.0f ? -1.0f : (ry > 1.0f ? 1.0f : ry));
+        // Offset so the device lying flat (rx=0, rz=~1, lon=0) looks at
+        // the Americas - purely this particular texture's inherent
+        // alignment (which longitude ends up at its horizontal center),
+        // found by trial and error on real hardware, not a real-world
+        // convention. Went 0 (Indian Ocean) -> 180 (Africa) -> 270
+        // (Europe, the Americas being a half-turn - 180 deg - further
+        // around from there either direction) -> 90.
+        constexpr float LON_OFFSET_DEG = 90.0f;
+        float lon = atan2f(rx, rz) + LON_OFFSET_DEG * RAD_PER_DEG;
+        int u = static_cast<int>((lon / (2.0f * static_cast<float>(M_PI)) + 0.5f) * EARTH_TEX_W);
+        int v = static_cast<int>((0.5f - lat / static_cast<float>(M_PI)) * EARTH_TEX_H);
+        u = ((u % EARTH_TEX_W) + EARTH_TEX_W) % EARTH_TEX_W;  // wrap the longitude seam
+        if (v < 0) v = 0;
+        if (v >= EARTH_TEX_H) v = EARTH_TEX_H - 1;
+        const uint8_t *texel = &EARTH_TEX_RGB[(v * EARTH_TEX_W + u) * 3];
 
-        // Lambertian-style shading: how much this point's (rotated)
-        // surface normal faces the fixed light. Floored well above 0 (not
-        // just barely above black) so the "dark" side still reads as a
-        // lit color, not a near-black smudge - reported too dark twice
-        // now, first at 0.15, then still too dark at 0.55.
-        float brightness = rx * LIGHT_X + ry * LIGHT_Y + rz * LIGHT_Z;
-        if (brightness < 0.8f) brightness = 0.8f;
-        if (brightness > 1.0f) brightness = 1.0f;
-
-        uint8_t r, g, b;
-        if (land) {
-          r = 140;
-          g = 220;
-          b = 140;  // land: green
-        } else {
-          r = 90;
-          g = 170;
-          b = 255;  // ocean: blue
-        }
-        color = lv_color_make(static_cast<uint8_t>(r * brightness), static_cast<uint8_t>(g * brightness),
-                               static_cast<uint8_t>(b * brightness));
+        // No more Lambertian darkening at all - the procedural colors this
+        // shading was tuned against were bright/saturated to begin with,
+        // but the real photo texture's natural tones (deep ocean blue,
+        // dark forest green) read as "way too dark, barely visible" even
+        // at full (1.0) brightness once shading was involved at all.
+        //
+        // A flat multiplier (tried first) barely helps the darkest blues
+        // and greens - doubling a very small channel value is still a
+        // small value. A gamma curve (out = 255*(in/255)^gamma) instead
+        // lifts dark tones much more than already-bright ones, and the
+        // smaller the exponent, the stronger that lift. Went through
+        // gamma=0.5 (sqrt), 1/3 (cbrt), and 0.25, all still reported too
+        // dark - this uses gamma=0.18: a channel value of 20 now rises to
+        // ~166, 200 still only rises to ~246. gamma_lut precomputes this
+        // once in on_open (see its own comment) instead of calling powf()
+        // here per pixel per channel.
+        color = lv_color_make(gamma_lut[texel[0]], gamma_lut[texel[1]], gamma_lut[texel[2]]);
       }
       ball_canvas_buf[py * BALL_SIZE + px] = color;
     }
@@ -287,8 +303,15 @@ void render_ball() {
 
 // update_level() already refreshed ball_pitch_deg/ball_roll_deg - this
 // just throttles the (relatively expensive) full-canvas render, see
-// BALL_RENDER_EVERY_N_TICKS.
+// BALL_RENDER_EVERY_N_TICKS. Skipped entirely unless the Ball page is the
+// one actually visible - this used to run unconditionally on every poll
+// regardless of which page was showing, which meant the expensive
+// per-pixel render (a handful of trig/pow calls per pixel, ~7800 pixels)
+// was periodically hogging the CPU even while looking at the Level page,
+// starving touch/gesture polling and reading as "the whole app is
+// laggy and swipes stopped registering" - not just a Ball-page problem.
 void update_ball() {
+  if (current_page != 1) return;
   if (poll_tick_count % BALL_RENDER_EVERY_N_TICKS == 0) render_ball();
 }
 
@@ -301,6 +324,13 @@ void poll_imu(lv_timer_t * /*t*/) {
 }
 
 void on_open(lv_obj_t *parent) {
+  // See gamma_lut's own comment - computed once here rather than calling
+  // powf() per pixel per channel in render_ball().
+  constexpr float GAMMA = 0.18f;
+  for (int i = 0; i < 256; i++) {
+    gamma_lut[i] = static_cast<uint8_t>(powf(i / 255.0f, GAMMA) * 255.0f);
+  }
+
   // A gyro_app-owned wrapper, not `parent` directly - `parent` is shared
   // and reused across every app, so an event callback added straight to
   // it would silently accumulate a fresh duplicate registration every
