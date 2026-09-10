@@ -50,6 +50,16 @@
 #define PIN_TOUCH_RST 20
 #define PIN_TOUCH_INT 21
 
+// Battery voltage sense (ADC1 channel 0) - confirmed against Waveshare's
+// own official demo (Arduino/examples/05_lvgl_battery, bundled in
+// ESP32-C6-Touch-LCD-1.47-Demo.zip off their wiki): the board divides the
+// battery voltage down before this pin (an onboard ETA6098 charging IC
+// handles the actual charging), by a factor the demo undoes with
+// `analogReadMilliVolts(pin) * 3.0f / 1000.0f`. There is no separate
+// charge-status GPIO on this board - see battery_app.cpp for how
+// charging/discharging is inferred from the voltage trend instead.
+#define PIN_BAT_ADC 0
+
 // Bottom-hint text apps show for how to get back to the home screen -
 // differs by board because the physical button's role differs: on this
 // board touch handles navigation/actions, so the button is solely a quick

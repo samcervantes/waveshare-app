@@ -115,6 +115,8 @@ src/
     hn_app.cpp/.h           "News": Hacker News front-page stories, plus a
                             swipeable BBC World headlines page (touch board)
     birds_app.cpp/.h        Angry-Birds-style slingshot
-    gyro_app.cpp/.h         Attitude indicator driven by the IMU (touch board only)
+    gyro_app.cpp/.h         Bubble level + spinning 3D globe, driven by the IMU
+                            (touch board only)
+    battery_app.cpp/.h      Battery charge % and charging status (touch board only)
     rgb_app.cpp/.h          NeoPixel color cycler (non-touch board only)
 ```
