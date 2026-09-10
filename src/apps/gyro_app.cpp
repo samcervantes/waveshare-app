@@ -102,10 +102,18 @@ constexpr float RAD_PER_DEG = static_cast<float>(M_PI) / 180.0f;
 // through software emulation).
 constexpr int BALL_SIZE = 100;
 constexpr int BALL_RADIUS = BALL_SIZE / 2;
-// Redraw the sphere every other IMU poll (~10 times/second) rather than
-// every tick - halves the per-pixel render cost's contribution to overall
-// CPU load for a spin speed that still reads as smooth, while the spin
-// angle itself still accumulates every tick for accuracy.
+// Redraw the sphere every other IMU poll (~10 times/second). Briefly
+// tried every tick (~20/s, matching POLL_MS) to make the spin look
+// smoother, but that made the physical BOOT button ("go home") miss
+// presses on this page specifically - the render call is long enough
+// that it can block the main loop() past the point where input.cpp's
+// polled button debounce would otherwise catch a quick press-then-release
+// edge (see input.cpp's own comment on why a polled digitalRead() can
+// miss a full press cycle that happens between two poll() calls). Going
+// home working reliably matters more than this page's smoothness, so
+// this stays throttled - if the render gets meaningfully cheaper later
+// (or input handling becomes interrupt-driven instead of polled), it's
+// safe to revisit.
 constexpr int BALL_RENDER_EVERY_N_TICKS = 2;
 
 lv_obj_t *root = nullptr;
@@ -227,6 +235,21 @@ void render_ball() {
   float cos_pitch = cosf(pitch_rad), sin_pitch = sinf(pitch_rad);
 
   for (int py = 0; py < BALL_SIZE; py++) {
+    // Bail out of a render in progress the instant the physical BOOT
+    // button is held down, rather than finishing all BALL_SIZE rows first.
+    // input.cpp's button debounce is polled from the main loop(), not
+    // interrupt-driven (see its own comment) - so a render that runs long
+    // enough can make a quick "go home" press-then-release happen entirely
+    // in the gap between two loop() iterations and never register at all,
+    // which is exactly what got reported here. A raw digitalRead() is
+    // effectively free next to the per-pixel float math below, so
+    // checking it every row (not just every render, or every few rows)
+    // costs nothing worth measuring but bounds how long this can ever
+    // block the main loop to about one row's worth of work. Leaving the
+    // canvas half-updated when this fires is fine - the app is about to
+    // be torn down anyway.
+    if (digitalRead(PIN_BOOT_BUTTON) == LOW) return;
+
     float ny = (py - BALL_RADIUS + 0.5f) / BALL_RADIUS;
     for (int px = 0; px < BALL_SIZE; px++) {
       float nx = (px - BALL_RADIUS + 0.5f) / BALL_RADIUS;
@@ -468,19 +491,11 @@ void on_open(lv_obj_t *parent) {
   // render_ball() (see its comment for the projection/shading math) -
   // no border/frame object needed since the render already draws the
   // sphere's own circular silhouette against a black background matching
-  // the app's own bg, so it just floats there.
+  // the app's own bg, so it just floats there. Centered on the screen -
+  // this page has nothing else on it now that the hint text is gone.
   ball_canvas = lv_canvas_create(page_ball);
   lv_canvas_set_buffer(ball_canvas, ball_canvas_buf, BALL_SIZE, BALL_SIZE, LV_IMG_CF_TRUE_COLOR);
-  lv_obj_align(ball_canvas, LV_ALIGN_TOP_MID, 0, FRAME_TOP + (FRAME_SIZE - BALL_SIZE) / 2);
-
-  lv_obj_t *ball_hint = lv_label_create(page_ball);
-  lv_label_set_text(ball_hint, "Tilt the device - the ball mirrors it");
-  lv_obj_set_style_text_font(ball_hint, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(ball_hint, lv_color_white(), 0);
-  lv_label_set_long_mode(ball_hint, LV_LABEL_LONG_WRAP);
-  lv_obj_set_width(ball_hint, LCD_PANEL_WIDTH - 16);
-  lv_obj_set_style_text_align(ball_hint, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align_to(ball_hint, ball_canvas, LV_ALIGN_OUT_BOTTOM_MID, 0, 20);
+  lv_obj_center(ball_canvas);
 
   // --- Shared ---
 

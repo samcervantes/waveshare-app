@@ -27,6 +27,16 @@ void input_init() {
   last_change_ms = millis();
 }
 
+// Plain polled digitalRead(), not an interrupt - which means this only
+// ever sees whatever the pin's level happens to be at the moment it's
+// called, not a history of transitions. If something else blocks
+// loop() (and therefore this call) for long enough, a full quick
+// press-then-release can happen entirely in the gap and never register -
+// found via gyro_app.cpp's Ball page, whose per-frame render was long
+// enough to occasionally do exactly that (see its own comment). Normal
+// UI work is short enough this has never otherwise been an issue, but it's
+// the reason any future app with a chunky per-frame render should be
+// careful about how long a single call can block the main loop for.
 ButtonEvent input_poll() {
   bool raw = raw_pressed();
   uint32_t now = millis();
