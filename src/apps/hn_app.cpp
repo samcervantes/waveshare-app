@@ -52,8 +52,23 @@ constexpr uint32_t WIFI_WAIT_MS = 5000;
 // real-world testing showed a connect failure can hang far longer than
 // its configured timeout. poll_fetch()/poll_headlines_fetch() below
 // force-kill their task if this elapses, so the UI can never get stuck.
-constexpr uint32_t HARD_TIMEOUT_MS = 20000;
-constexpr int MAX_ATTEMPTS = 2;
+// 30s, not 20s: MAX_ATTEMPTS went from 2 to 3 (see its own comment) - in
+// a worst-case slow-connection run (each attempt actually using its full
+// setTimeout()/setConnectTimeout() budget, not failing fast) 3 attempts
+// plus 2 retry delays already approaches 30s on its own, and this needs
+// enough room for a 3rd attempt to actually get a chance to complete
+// rather than being force-killed partway through every time.
+constexpr uint32_t HARD_TIMEOUT_MS = 30000;
+// 2 attempts/1.5s backoff wasn't enough headroom for a BBC fetch that
+// failed with an abnormal HTTPClient return code (1 - not a real HTTP
+// status, not one of HTTPClient's own negative error constants either)
+// alongside a low free-heap reading (~43KB) - consistent with a TLS
+// handshake that didn't have enough contiguous heap to complete cleanly
+// on this board. More attempts with more time between them gives
+// fragmentation/other apps' transient allocations more chance to clear
+// before the next try.
+constexpr int MAX_ATTEMPTS = 3;
+constexpr uint32_t RETRY_DELAY_MS = 2500;
 constexpr const char *STORIES_URL = "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=6";
 
 struct Story {
@@ -227,7 +242,7 @@ void fetch_task(void * /*param*/) {
     snprintf(last_error, sizeof(last_error), "no WiFi (status=%d)", WiFi.status());
   } else {
     for (int attempt = 0; attempt < MAX_ATTEMPTS && !ok; attempt++) {
-      if (attempt > 0) vTaskDelay(pdMS_TO_TICKS(1500));
+      if (attempt > 0) vTaskDelay(pdMS_TO_TICKS(RETRY_DELAY_MS));
       ok = try_fetch_once(result);
     }
   }
@@ -307,21 +322,49 @@ void poll_fetch(lv_timer_t * /*t*/) {
 }
 
 #if defined(BOARD_TOUCH_LCD147)
-// Finds `tag` at or after `from`, then the <![CDATA[ ... ]]> immediately
-// following it, and copies the text inside into `out`. Returns the
-// position just past the CDATA close (via `next_pos`, if non-null) so the
-// caller can keep scanning forward for the next tag without re-finding
-// this one - see try_bbc_fetch_once's title-then-description lookup.
-bool extract_cdata(const String &s, int from, const char *tag, char *out, size_t out_size, int *next_pos) {
-  int tag_pos = s.indexOf(tag, from);
-  if (tag_pos < 0) return false;
-  int cdata_start = s.indexOf("<![CDATA[", tag_pos);
-  if (cdata_start < 0) return false;
+// Root cause of the "body truncated: 0/20217 bytes" failure found by
+// reading HTTPClient::getString()'s actual source: it does
+// `sstring.reserve(_size + 1)` to allocate a buffer for the *entire*
+// declared Content-Length up front, and if that fails (this feed is
+// ~20KB, and this board's free heap runs in the tens-of-KB range with
+// other apps' state still resident), it silently returns an empty
+// string - no exception, no error code, `getString()` just hands back "".
+// A GET=1 failure seen earlier (see MAX_ATTEMPTS's comment) was likely
+// the same underlying cause manifesting slightly differently.
+//
+// Fixed by never asking for the whole body: this app only ever wants the
+// first MAX_HEADLINES <item> blocks, which live in the first few KB of
+// the feed (right after the <channel> metadata) - so it reads a bounded
+// prefix, at most BODY_BUF_SIZE bytes, off http.getStream() directly into
+// this fixed buffer. Static, not heap-allocated (matches gyro_app.cpp's
+// canvas buffer reasoning) - a compile-time-sized allocation can't fail
+// the way a large runtime reserve() can, and it's a small, fixed, one-time
+// RAM cost instead of a "does this happen to fit right now" gamble on
+// every fetch.
+constexpr size_t BODY_BUF_SIZE = 8192;
+char bbc_body_buf[BODY_BUF_SIZE];
+
+// Finds `tag` at or after byte offset `from` in `buf`, then the
+// <![CDATA[ ... ]]> immediately following it, and copies the text inside
+// into `out`. Returns the offset just past the CDATA close (via
+// `next_pos`, if non-null) so the caller can keep scanning forward for the
+// next tag without re-finding this one - see try_bbc_fetch_once's
+// title-then-description lookup. Operates on a plain null-terminated char
+// buffer (via strstr), not an Arduino String - see BODY_BUF_SIZE's comment
+// for why this reads into a fixed char[] instead of a String now.
+bool extract_cdata(const char *buf, size_t from, const char *tag, char *out, size_t out_size, size_t *next_pos) {
+  const char *tag_pos = strstr(buf + from, tag);
+  if (!tag_pos) return false;
+  const char *cdata_start = strstr(tag_pos, "<![CDATA[");
+  if (!cdata_start) return false;
   cdata_start += 9;  // strlen("<![CDATA[")
-  int cdata_end = s.indexOf("]]>", cdata_start);
-  if (cdata_end < 0) return false;
-  snprintf(out, out_size, "%s", s.substring(cdata_start, cdata_end).c_str());
-  if (next_pos) *next_pos = cdata_end + 3;
+  const char *cdata_end = strstr(cdata_start, "]]>");
+  if (!cdata_end) return false;
+  size_t len = static_cast<size_t>(cdata_end - cdata_start);
+  if (len >= out_size) len = out_size - 1;
+  memcpy(out, cdata_start, len);
+  out[len] = '\0';
+  if (next_pos) *next_pos = static_cast<size_t>((cdata_end + 3) - buf);
   return true;
 }
 
@@ -331,6 +374,8 @@ bool try_bbc_fetch_once(BBCData &result) {
     snprintf(bbc_last_error, sizeof(bbc_last_error), "DNS lookup failed");
     return false;
   }
+
+  Serial.printf("[hn_app] BBC fetch attempt: heap=%u\n", ESP.getFreeHeap());
 
   WiFiClientSecure client;
   client.setInsecure();  // public read-only data, not worth carrying a CA bundle for
@@ -351,30 +396,58 @@ bool try_bbc_fetch_once(BBCData &result) {
     return false;
   }
 
-  String payload = http.getString();
+  // Bounded read into bbc_body_buf - see its own comment for why this
+  // isn't http.getString(). The deadline resets on every bit of forward
+  // progress, so a slow-but-still-moving connection isn't cut off, only a
+  // truly stalled one.
+  NetworkClient &stream = http.getStream();
+  size_t total = 0;
+  uint32_t read_deadline = millis() + 8000;
+  while (total < BODY_BUF_SIZE - 1 && millis() < read_deadline) {
+    int avail = stream.available();
+    if (avail <= 0) {
+      if (!http.connected()) break;  // server closed the connection, nothing left to read
+      delay(10);
+      continue;
+    }
+    int room = static_cast<int>(BODY_BUF_SIZE - 1 - total);
+    int chunk = avail < room ? avail : room;
+    if (chunk <= 0) break;
+    int got = stream.readBytes(bbc_body_buf + total, chunk);
+    if (got <= 0) break;
+    total += static_cast<size_t>(got);
+    read_deadline = millis() + 8000;
+  }
+  bbc_body_buf[total] = '\0';
   http.end();
+  Serial.printf("[hn_app] BBC fetch: HTTP 200, read %u bytes into fixed buffer, heap=%u\n", total,
+                ESP.getFreeHeap());
 
-  int n = 0;
-  int pos = 0;
-  while (n < static_cast<int>(MAX_HEADLINES)) {
-    int item_start = payload.indexOf("<item>", pos);
-    if (item_start < 0) break;
-    int item_end = payload.indexOf("</item>", item_start);
-    if (item_end < 0) break;
+  size_t n = 0;
+  size_t pos = 0;
+  while (n < MAX_HEADLINES) {
+    const char *item_start_p = strstr(bbc_body_buf + pos, "<item>");
+    if (!item_start_p) break;
+    size_t item_start = static_cast<size_t>(item_start_p - bbc_body_buf);
+    const char *item_end_p = strstr(bbc_body_buf + item_start, "</item>");
+    if (!item_end_p) break;
+    size_t item_end = static_cast<size_t>(item_end_p - bbc_body_buf);
 
-    int after_title = 0;
-    bool got_title = extract_cdata(payload, item_start, "<title>", result.headlines[n].title,
+    size_t after_title = 0;
+    bool got_title = extract_cdata(bbc_body_buf, item_start, "<title>", result.headlines[n].title,
                                     sizeof(result.headlines[n].title), &after_title);
-    bool got_desc = got_title && extract_cdata(payload, after_title, "<description>",
+    bool got_desc = got_title && extract_cdata(bbc_body_buf, after_title, "<description>",
                                                 result.headlines[n].description,
                                                 sizeof(result.headlines[n].description), nullptr);
     if (got_title && got_desc) n++;
     pos = item_end + 7;
   }
 
-  result.count = n;
+  result.count = static_cast<int>(n);
   result.valid = n > 0;
-  if (!result.valid) snprintf(bbc_last_error, sizeof(bbc_last_error), "parsed but no headlines");
+  if (!result.valid) {
+    snprintf(bbc_last_error, sizeof(bbc_last_error), "no headlines in first %u bytes", total);
+  }
   return result.valid;
 }
 
@@ -392,7 +465,7 @@ void bbc_fetch_task(void * /*param*/) {
     snprintf(bbc_last_error, sizeof(bbc_last_error), "no WiFi (status=%d)", WiFi.status());
   } else {
     for (int attempt = 0; attempt < MAX_ATTEMPTS && !ok; attempt++) {
-      if (attempt > 0) vTaskDelay(pdMS_TO_TICKS(1500));
+      if (attempt > 0) vTaskDelay(pdMS_TO_TICKS(RETRY_DELAY_MS));
       ok = try_bbc_fetch_once(result);
     }
   }
