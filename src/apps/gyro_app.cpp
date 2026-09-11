@@ -486,12 +486,13 @@ void render_attitude() {
       } else {
         float nz = sqrtf(1.0f - r2);
         // Pitch first: tilts the horizon up/down by rotating (ny, nz)
-        // around the screen's horizontal axis. +nz*sin_pitch (not -), to
-        // match the sign of the original ry = ny*cos_pitch + rz_roll*sin_pitch
-        // (at roll=0, rz_roll reduced to nz) - the first version of this
-        // rewrite flipped that sign by accident, which is why pitch
-        // direction broke when this composition replaced the old one.
-        float ny_pitched = ny * cos_pitch + nz * sin_pitch;
+        // around the screen's horizontal axis. -nz*sin_pitch (not +) per
+        // user feedback that pitch direction was reversed on hardware -
+        // matching the old render_ball()-style formula's sign (tried
+        // first) was the wrong call, since attitude_roll_deg is a
+        // different physical quantity than ball_roll_deg, not guaranteed
+        // to share its sign convention.
+        float ny_pitched = ny * cos_pitch - nz * sin_pitch;
         // Roll second, as an in-plane (nx, ny) rotation - this banks the
         // horizon through the center regardless of pitch, like a real
         // attitude indicator. The old approach (rotating nx into nz, the
