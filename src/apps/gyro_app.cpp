@@ -7,6 +7,7 @@
 #include "config.h"
 #include "earth_data/earth.h"
 #include "imu.h"
+#include "touch.h"
 
 // Three swipeable pages, all driven by the QMI8658A (imu.cpp/.h):
 //  - Level: a bubble-level style visualization of the accelerometer - a
@@ -118,6 +119,14 @@ constexpr float RAD_PER_DEG = static_cast<float>(M_PI) / 180.0f;
 // through software emulation).
 constexpr int BALL_SIZE = 100;
 constexpr int BALL_RADIUS = BALL_SIZE / 2;
+// How far up (negative y) the Attitude page's ball and everything fixed
+// to it (aircraft symbol, bank scale/pointer) sit relative to true screen
+// center - opens up more breathing room to the pitch/roll readout boxes
+// below, which don't move (see READOUT_Y in on_open). The render itself
+// (render_attitude's per-pixel math) doesn't need to know about this -
+// only where the canvas and its fixed overlay objects are placed on
+// screen changes.
+constexpr int ATTITUDE_Y_SHIFT = -16;
 // Redraw the sphere every other IMU poll (~10 times/second). Briefly
 // tried every tick (~20/s, matching POLL_MS) to make the spin look
 // smoother, but that made the physical BOOT button ("go home") miss
@@ -152,6 +161,12 @@ lv_obj_t *gyro_label = nullptr;
 // mixing the two on the same object caused real bugs before), so unlike
 // the fixed tick marks it can safely be repositioned every frame.
 lv_obj_t *bank_pointer = nullptr;
+
+// Digital pitch/roll readouts below the ball on the Attitude page - text
+// only, updated every tick alongside bank_pointer (see update_level()),
+// not repositioned, so no lv_obj_align/set_pos conflict to worry about.
+lv_obj_t *attitude_pitch_value = nullptr;
+lv_obj_t *attitude_roll_value = nullptr;
 
 // Precomputed once in on_open (see below), not called as powf() per pixel
 // per channel in render_ball - a texture's channel value only has 256
@@ -275,7 +290,42 @@ void update_level(const ImuSample &s) {
     float bank_rad = bank * RAD_PER_DEG;
     lv_coord_t dx = static_cast<lv_coord_t>(POINTER_RADIUS * sinf(bank_rad));
     lv_coord_t dy = static_cast<lv_coord_t>(-POINTER_RADIUS * cosf(bank_rad));
-    lv_obj_set_pos(bank_pointer, LCD_PANEL_WIDTH / 2 - 3 + dx, LCD_PANEL_HEIGHT / 2 - 3 + dy);
+    lv_obj_set_pos(bank_pointer, LCD_PANEL_WIDTH / 2 - 3 + dx, LCD_PANEL_HEIGHT / 2 - 3 + ATTITUDE_Y_SHIFT + dy);
+  }
+
+  // Digital pitch/roll readouts below the ball - attitude_roll_deg feeds
+  // render_attitude()'s pitch_rad and attitude_pitch_deg feeds its
+  // roll_rad/bank_pointer (see those declaration comments for why the
+  // names cross over), so that's the pairing used here too, for the same
+  // "one consistent mapping" reason. Raw values, not sign-adjusted to
+  // match the ball's rendered tilt direction - first guess, same as every
+  // other axis/sign convention this page started with.
+  if (attitude_pitch_value && attitude_roll_value) {
+    // attitude_roll_deg's atan2() reference axis (accel_y) reads negative
+    // when the device is held vertically at rest, so the raw value sits
+    // near +-180 deg at "straight and level" instead of 0 - confirmed by
+    // user report. Rather than changing attitude_roll_deg itself (which
+    // would also perturb render_attitude()'s already-validated pitch_rad
+    // geometry), shift only this display copy by 180 deg (wrapped back
+    // into +-180) so the readout reads 0 at rest while the render is
+    // untouched.
+    float pitch_display_deg = attitude_roll_deg - 180.0f;
+    if (pitch_display_deg < -180.0f) pitch_display_deg += 360.0f;
+    // Negated for display only, per user feedback - the render itself
+    // (pitch_rad, still driven directly by attitude_roll_deg) is untouched.
+    pitch_display_deg = -pitch_display_deg;
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%+.0f\xC2\xB0", pitch_display_deg);
+    lv_label_set_text(attitude_pitch_value, buf);
+
+    // Roll shown as a magnitude + L/R letter instead of a signed number,
+    // per user request - which letter means which sign is a first guess
+    // (the underlying sign/direction itself is already validated via
+    // bank_pointer and render_attitude()'s roll_rad, only the label
+    // format is new here).
+    char roll_buf[8];
+    snprintf(roll_buf, sizeof(roll_buf), "%.0f\xC2\xB0%c", fabsf(attitude_pitch_deg), attitude_pitch_deg >= 0.0f ? 'R' : 'L');
+    lv_label_set_text(attitude_roll_value, roll_buf);
   }
 
   // Plain libc snprintf, not lv_label_set_text_fmt: this project's
@@ -404,6 +454,18 @@ void render_ball() {
   lv_obj_invalidate(ball_canvas);
 }
 
+// A fresh, standalone I2C touch read (not LVGL's own indev state) so
+// update_ball()/update_attitude() can check "is a finger down right now"
+// without depending on LVGL's read timer having already run this loop()
+// iteration - the whole point is to react before starting a render, not
+// after the indev timer (which shares the same blocked main loop) gets a
+// chance to. One extra ~sub-ms I2C transaction per throttled render tick,
+// not per pixel/row, so this doesn't meaningfully add to render cost.
+bool touch_is_down() {
+  int16_t tx, ty;
+  return touch_read(&tx, &ty);
+}
+
 // update_level() already refreshed ball_pitch_deg/ball_roll_deg - this
 // just throttles the (relatively expensive) full-canvas render, see
 // BALL_RENDER_EVERY_N_TICKS. Skipped entirely unless the Ball page is the
@@ -415,7 +477,18 @@ void render_ball() {
 // laggy and swipes stopped registering" - not just a Ball-page problem.
 void update_ball() {
   if (current_page != 1) return;
-  if (poll_tick_count % BALL_RENDER_EVERY_N_TICKS == 0) render_ball();
+  if (poll_tick_count % BALL_RENDER_EVERY_N_TICKS != 0) return;
+  // Also skip while a touch is actively down - even gated to just this
+  // page (see the comment above), a render can still block the main loop
+  // long enough to make LVGL's indev timer miss the touch samples a swipe
+  // gesture needs, since that timer only runs between loop() iterations.
+  // Skipping renders for the tick(s) spanning a touch means one stale
+  // frame at most, versus swipes silently getting dropped and needing
+  // several attempts to actually change pages - see touch_is_down()'s
+  // own comment for why a fresh read here (not reusing LVGL's indev
+  // state) is the simplest way to know that.
+  if (touch_is_down()) return;
+  render_ball();
 }
 
 // Same sphere-in-orthographic-projection setup as render_ball() (see its
@@ -536,7 +609,9 @@ void render_attitude() {
 // handling even while a different page was showing).
 void update_attitude() {
   if (current_page != 2) return;
-  if (poll_tick_count % BALL_RENDER_EVERY_N_TICKS == 0) render_attitude();
+  if (poll_tick_count % BALL_RENDER_EVERY_N_TICKS != 0) return;
+  if (touch_is_down()) return;  // see update_ball()'s identical check for why
+  render_attitude();
 }
 
 void poll_imu(lv_timer_t * /*t*/) {
@@ -731,7 +806,7 @@ void on_open(lv_obj_t *parent) {
   if (attitude_canvas_buf) {
     attitude_canvas = lv_canvas_create(page_attitude);
     lv_canvas_set_buffer(attitude_canvas, attitude_canvas_buf, BALL_SIZE, BALL_SIZE, LV_IMG_CF_TRUE_COLOR);
-    lv_obj_center(attitude_canvas);
+    lv_obj_align(attitude_canvas, LV_ALIGN_CENTER, 0, ATTITUDE_Y_SHIFT);
 
     // Fixed aircraft reference symbol - a gap-in-the-middle wing bar plus
     // a center dot, the classic look of a real attitude indicator's fixed
@@ -750,7 +825,7 @@ void on_open(lv_obj_t *parent) {
     lv_obj_set_size(left_wing, WING_LEN, 4);
     lv_obj_set_style_bg_opa(left_wing, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(left_wing, lv_color_hex(0xFFCC00), 0);
-    lv_obj_align(left_wing, LV_ALIGN_CENTER, -(WING_GAP / 2 + WING_LEN / 2), 0);
+    lv_obj_align(left_wing, LV_ALIGN_CENTER, -(WING_GAP / 2 + WING_LEN / 2), ATTITUDE_Y_SHIFT);
     lv_obj_clear_flag(left_wing, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *right_wing = lv_obj_create(page_attitude);
@@ -758,7 +833,7 @@ void on_open(lv_obj_t *parent) {
     lv_obj_set_size(right_wing, WING_LEN, 4);
     lv_obj_set_style_bg_opa(right_wing, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(right_wing, lv_color_hex(0xFFCC00), 0);
-    lv_obj_align(right_wing, LV_ALIGN_CENTER, WING_GAP / 2 + WING_LEN / 2, 0);
+    lv_obj_align(right_wing, LV_ALIGN_CENTER, WING_GAP / 2 + WING_LEN / 2, ATTITUDE_Y_SHIFT);
     lv_obj_clear_flag(right_wing, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *center_dot = lv_obj_create(page_attitude);
@@ -767,7 +842,7 @@ void on_open(lv_obj_t *parent) {
     lv_obj_set_style_radius(center_dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(center_dot, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(center_dot, lv_color_hex(0xFFCC00), 0);
-    lv_obj_align(center_dot, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(center_dot, LV_ALIGN_CENTER, 0, ATTITUDE_Y_SHIFT);
     lv_obj_clear_flag(center_dot, LV_OBJ_FLAG_SCROLLABLE);
 
     // Bank-angle scale: fixed tick marks at 0/+-30/+-60 degrees around the
@@ -796,7 +871,7 @@ void on_open(lv_obj_t *parent) {
       lv_obj_set_style_radius(tick, is_zero ? 1 : LV_RADIUS_CIRCLE, 0);
       lv_obj_set_style_bg_opa(tick, LV_OPA_COVER, 0);
       lv_obj_set_style_bg_color(tick, lv_color_white(), 0);
-      lv_obj_align(tick, LV_ALIGN_CENTER, dx, dy);
+      lv_obj_align(tick, LV_ALIGN_CENTER, dx, ATTITUDE_Y_SHIFT + dy);
       lv_obj_clear_flag(tick, LV_OBJ_FLAG_SCROLLABLE);
     }
 
@@ -808,8 +883,57 @@ void on_open(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(bank_pointer, lv_color_hex(0xFFCC00), 0);
     // Absolute lv_obj_set_pos here too, not lv_obj_align, even for this
     // first placement - see bank_pointer's own declaration comment.
-    lv_obj_set_pos(bank_pointer, LCD_PANEL_WIDTH / 2 - 3, LCD_PANEL_HEIGHT / 2 - 3 - static_cast<lv_coord_t>(BALL_RADIUS - 4));
+    lv_obj_set_pos(bank_pointer, LCD_PANEL_WIDTH / 2 - 3,
+                   LCD_PANEL_HEIGHT / 2 - 3 + ATTITUDE_Y_SHIFT - static_cast<lv_coord_t>(BALL_RADIUS - 4));
     lv_obj_clear_flag(bank_pointer, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Digital pitch/roll readouts, PFD-style: small dark boxes with a
+    // green border/caption and a bright value, sitting in the gap between
+    // the ball (bottom edge at screen-center + BALL_RADIUS) and the hint
+    // text at the very bottom of the screen. Built once here and never
+    // repositioned - only their text changes, in update_level().
+    constexpr lv_coord_t READOUT_BOX_W = 76;
+    constexpr lv_coord_t READOUT_BOX_H = 54;
+    constexpr lv_coord_t READOUT_GAP = 8;
+    constexpr lv_coord_t READOUT_Y = LCD_PANEL_HEIGHT / 2 + BALL_RADIUS + 14;
+    struct ReadoutSpec {
+      const char *caption;
+      lv_coord_t x_offset;
+      lv_obj_t **value_out;
+    };
+    const ReadoutSpec readouts[] = {
+        {"PITCH", -(READOUT_GAP / 2 + READOUT_BOX_W / 2), &attitude_pitch_value},
+        {"ROLL", READOUT_GAP / 2 + READOUT_BOX_W / 2, &attitude_roll_value},
+    };
+    for (const ReadoutSpec &spec : readouts) {
+      lv_obj_t *box = lv_obj_create(page_attitude);
+      lv_obj_remove_style_all(box);
+      lv_obj_set_size(box, READOUT_BOX_W, READOUT_BOX_H);
+      lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+      lv_obj_set_style_bg_color(box, lv_color_hex(0x0D1117), 0);
+      lv_obj_set_style_radius(box, 8, 0);
+      lv_obj_set_style_border_width(box, 1, 0);
+      // Halfway between the 0x30D158 green used elsewhere in this app
+      // (Level page bubble, app icon) and 0x39FF6A (the first, too-bright
+      // attempt at more contrast against the box's dark background) - per
+      // user feedback that 0x39FF6A overshot.
+      lv_obj_set_style_border_color(box, lv_color_hex(0x35E861), 0);
+      lv_obj_align(box, LV_ALIGN_TOP_MID, spec.x_offset, READOUT_Y);
+      lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+
+      lv_obj_t *caption = lv_label_create(box);
+      lv_label_set_text(caption, spec.caption);
+      lv_obj_set_style_text_font(caption, &lv_font_montserrat_14, 0);
+      lv_obj_set_style_text_color(caption, lv_color_hex(0x35E861), 0);
+      lv_obj_align(caption, LV_ALIGN_TOP_MID, 0, 4);
+
+      lv_obj_t *value = lv_label_create(box);
+      lv_label_set_text(value, "--");
+      lv_obj_set_style_text_font(value, &lv_font_montserrat_20, 0);
+      lv_obj_set_style_text_color(value, lv_color_white(), 0);
+      lv_obj_align(value, LV_ALIGN_BOTTOM_MID, 0, -4);
+      *spec.value_out = value;
+    }
   } else {
     lv_obj_t *oom_label = lv_label_create(page_attitude);
     lv_label_set_text(oom_label, "Not enough free memory\nfor the horizon right now");
@@ -852,6 +976,7 @@ void on_close() {
   root = page_level = page_ball = page_attitude = nullptr;
   bubble = pitch_roll_label = accel_label = gyro_label = nullptr;
   bank_pointer = nullptr;
+  attitude_pitch_value = attitude_roll_value = nullptr;
   ball_canvas = attitude_canvas = nullptr;
   // Freed here, not a permanent static array - see the file header
   // comment and ball_canvas_buf's/attitude_canvas_buf's own declaration
