@@ -53,12 +53,20 @@
 // transform_angle/layer system entirely (see above) - it's plain
 // per-pixel writes into a canvas buffer, not a rotated LVGL object.
 //
-// The canvas buffer (ball_canvas_buf below) is a fixed-size global array,
-// not a runtime heap allocation - same reasoning as avoiding the rotated-
-// object crash: a heap allocation this large (the buffer is ~20KB) could
-// fail/fragment on this board's tight RAM, but a compile-time-sized global
-// array is reserved once, always in the same spot, with no allocation
-// call (and thus no allocation failure) at app-open time.
+// The canvas buffer (ball_canvas_buf below) is heap-allocated in on_open
+// and freed in on_close, not a permanent global array like an earlier
+// version of this comment recommended. That version's reasoning (a fixed
+// global can't fail the way a runtime allocation can) is true but
+// incomplete: a permanent ~20KB static reservation is gone for the entire
+// time the board is powered on, whether or not this page is ever visited
+// in a given session - it was found starving *other* apps' heap (the
+// Stocks app's TLS handshake, specifically, on a board where free heap
+// with WiFi connected runs in the tens-of-KB) even while this one wasn't
+// open. Allocating on open and freeing on close gives that 20KB back to
+// everything else the vast majority of the time this app isn't the one on
+// screen, at the cost of on_open needing to handle the (now real, if
+// still rare) case where the allocation itself fails - see its own
+// handling below.
 //
 // The accel-axis-to-screen-axis mapping on the Level page (does tilting
 // right move the dot right or left) was tuned against this specific board
@@ -135,8 +143,9 @@ lv_obj_t *gyro_label = nullptr;
 uint8_t gamma_lut[256];
 
 lv_obj_t *ball_canvas = nullptr;
-// Permanent static storage, not heap - see the file header comment.
-lv_color_t ball_canvas_buf[BALL_SIZE * BALL_SIZE];
+// Allocated in on_open, freed in on_close - see the file header comment
+// for why this isn't a permanent static array.
+lv_color_t *ball_canvas_buf = nullptr;
 // Latest pitch/roll, read by render_ball() - stored here rather than
 // passed as an argument because rendering is throttled to every other
 // tick (see BALL_RENDER_EVERY_N_TICKS) and needs the most recent values
@@ -223,6 +232,7 @@ void update_level(const ImuSample &s) {
 // redraw - see the file header comment for the projection/shading math
 // and why this is a plain pixel buffer rather than a rotated LVGL object.
 void render_ball() {
+  if (!ball_canvas_buf) return;  // allocation failed in on_open - see its own handling
   // Pitch/roll swapped per user feedback on real hardware - the ball's
   // rotation axes read backwards relative to the Level page's labels.
   // Pitch's sign has been flipped twice since - first because it read
@@ -493,9 +503,27 @@ void on_open(lv_obj_t *parent) {
   // sphere's own circular silhouette against a black background matching
   // the app's own bg, so it just floats there. Centered on the screen -
   // this page has nothing else on it now that the hint text is gone.
-  ball_canvas = lv_canvas_create(page_ball);
-  lv_canvas_set_buffer(ball_canvas, ball_canvas_buf, BALL_SIZE, BALL_SIZE, LV_IMG_CF_TRUE_COLOR);
-  lv_obj_center(ball_canvas);
+  //
+  // ball_canvas_buf is allocated here, not a permanent static array - see
+  // the file header comment for why. That means this allocation can
+  // genuinely fail on this board (unlike a compile-time array), so it's
+  // checked - better to show a plain message on this one cosmetic page
+  // than to write through a null pointer.
+  ball_canvas_buf = static_cast<lv_color_t *>(malloc(static_cast<size_t>(BALL_SIZE) * BALL_SIZE * sizeof(lv_color_t)));
+  if (ball_canvas_buf) {
+    ball_canvas = lv_canvas_create(page_ball);
+    lv_canvas_set_buffer(ball_canvas, ball_canvas_buf, BALL_SIZE, BALL_SIZE, LV_IMG_CF_TRUE_COLOR);
+    lv_obj_center(ball_canvas);
+  } else {
+    lv_obj_t *oom_label = lv_label_create(page_ball);
+    lv_label_set_text(oom_label, "Not enough free memory\nfor the globe right now");
+    lv_obj_set_style_text_font(oom_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(oom_label, lv_color_white(), 0);
+    lv_label_set_long_mode(oom_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(oom_label, LCD_PANEL_WIDTH - 24);
+    lv_obj_set_style_text_align(oom_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(oom_label);
+  }
 
   // --- Shared ---
 
@@ -526,6 +554,11 @@ void on_close() {
   root = page_level = page_ball = nullptr;
   bubble = pitch_roll_label = accel_label = gyro_label = nullptr;
   ball_canvas = nullptr;
+  // Freed here, not a permanent static array - see the file header
+  // comment and ball_canvas_buf's own declaration comment for why. free()
+  // on a null pointer (the allocation-failed case) is a defined no-op.
+  free(ball_canvas_buf);
+  ball_canvas_buf = nullptr;
   poll_tick_count = 0;
 }
 

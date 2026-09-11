@@ -39,6 +39,12 @@ constexpr uint32_t WIFI_WAIT_MS = 5000;
 // settings alone can't be trusted as a hard bound. poll_fetch() below
 // force-kills the task if this elapses, so the UI can never get stuck.
 constexpr uint32_t HARD_TIMEOUT_MS = 20000;
+// Sized with real margin above the ~8KB this response typically is (see
+// try_fetch_once's comment on why this exists instead of
+// http.getString()) - static, not heap-allocated, so it can't fail the
+// way a large runtime reserve() can.
+constexpr size_t STOCK_BODY_BUF_SIZE = 16384;
+char stock_body_buf[STOCK_BODY_BUF_SIZE];
 
 // Swipeable chart timescales. interval/range are Yahoo chart API params;
 // each pairing is chosen to land comfortably under MAX_POINTS (a 1y daily
@@ -142,19 +148,52 @@ bool try_fetch_once(StockData &result, Timescale ts) {
   meta["regularMarketDayHigh"] = true;
   filter["chart"]["result"][0]["indicators"]["quote"][0]["close"] = true;
 
-  // Reading the full body into a String first (instead of parsing
-  // directly from http.getStream()) turned out to matter: the streaming
-  // parser intermittently failed with "IncompleteInput" - likely an edge
-  // case in how HTTPClient's stream interacts with chunked transfer
-  // encoding. ~8KB response, and there's plenty of free heap for it
-  // (confirmed >140KB free elsewhere).
-  String payload = http.getString();
+  // Not http.getString() - it does sstring.reserve(_size + 1) to allocate
+  // a buffer for the *entire* declared Content-Length up front, and
+  // silently returns an empty String (no error, nothing to catch) if that
+  // fails. Root-caused by reading HTTPClient's own source after the News
+  // app's BBC fetch hit exactly this - "plenty of free heap... confirmed
+  // >140KB" above was true once, but heap has been observed this low as
+  // ~25-40KB free later in a long-running session, well under what an
+  // 8-16KB reserve() needs on top of whatever's already fragmented. Reads
+  // a bounded prefix off the stream into a fixed (not heap-allocated)
+  // buffer instead - unlike the BBC XML fix, this can't just stop at a
+  // convenient boundary partway through (truncated JSON won't parse at
+  // all), so stock_body_buf is sized with real margin above the ~8KB this
+  // typically is, and a response that still doesn't fit is reported as
+  // its own distinct error rather than silently handed to the JSON parser
+  // truncated.
+  NetworkClient &stream = http.getStream();
+  size_t total = 0;
+  uint32_t read_deadline = millis() + 5000;
+  while (total < STOCK_BODY_BUF_SIZE - 1 && millis() < read_deadline) {
+    int avail = stream.available();
+    if (avail <= 0) {
+      if (!http.connected()) break;
+      delay(10);
+      continue;
+    }
+    int room = static_cast<int>(STOCK_BODY_BUF_SIZE - 1 - total);
+    int chunk = avail < room ? avail : room;
+    if (chunk <= 0) break;
+    int got = stream.readBytes(stock_body_buf + total, chunk);
+    if (got <= 0) break;
+    total += static_cast<size_t>(got);
+    read_deadline = millis() + 5000;
+  }
+  bool overflowed = (total >= STOCK_BODY_BUF_SIZE - 1) && (stream.available() > 0 || http.connected());
+  stock_body_buf[total] = '\0';
   http.end();
 
+  if (overflowed) {
+    snprintf(last_error, sizeof(last_error), "response exceeds %uB buffer", STOCK_BODY_BUF_SIZE);
+    return false;
+  }
+
   JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+  DeserializationError err = deserializeJson(doc, stock_body_buf, DeserializationOption::Filter(filter));
   if (err) {
-    snprintf(last_error, sizeof(last_error), "JSON err: %s", err.c_str());
+    snprintf(last_error, sizeof(last_error), "JSON err: %s (%u bytes)", err.c_str(), total);
     return false;
   }
 
@@ -376,32 +415,53 @@ void on_open(lv_obj_t *parent) {
   // otherwise swallow taps over it before they ever reach root.
   lv_obj_add_event_cb(root, refresh_tap_cb, LV_EVENT_SHORT_CLICKED, nullptr);
 
+  // Fixed height (2-line reserve), not content-sized - status_label shows
+  // both brief status text ("Fetching...") and error messages ("Failed:
+  // response exceeds 16384B buffer"), which are long enough to wrap at
+  // this font/width. Reported hard to read at the old font14 single-line
+  // size; bumped to font16 with room reserved for wrapping up front so a
+  // longer error can't grow the label into price_label below it - same
+  // "reserve space, don't rely on content size" fix used elsewhere this
+  // session (gyro_app.cpp, battery_app.cpp) after hitting that overlap bug
+  // enough times to know better than to skip it here too. Every label
+  // below this one shifted down to make room, and the chart shrank
+  // slightly (140->125px) to keep the timescale label and bottom hint
+  // from colliding - there wasn't much spare vertical room to begin with.
   status_label = lv_label_create(root);
-  lv_obj_set_style_text_font(status_label, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(status_label, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(status_label, lv_color_hex(0xDDDDDD), 0);
   lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(status_label, LCD_PANEL_WIDTH - 12);
+  lv_obj_set_height(status_label, 38);
   lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(status_label, LV_ALIGN_TOP_MID, 0, 8);
+  lv_obj_align(status_label, LV_ALIGN_TOP_MID, 0, 6);
 
   price_label = lv_label_create(root);
   lv_obj_set_style_text_font(price_label, &lv_font_montserrat_32, 0);
   lv_label_set_text(price_label, "$--.--");
-  lv_obj_align(price_label, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_align(price_label, LV_ALIGN_TOP_MID, 0, 48);
 
+  // Given real text at creation, not left on LVGL's default placeholder
+  // ("Text") - unlike price_label/status_label, these two never had an
+  // initial lv_label_set_text() call, so the literal word "Text" was
+  // visible on screen (twice, once per label) for however long the first
+  // fetch took. apply_data() overwrites both with real content once data
+  // arrives.
   change_label = lv_label_create(root);
   lv_obj_set_style_text_font(change_label, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(change_label, lv_color_hex(0xDDDDDD), 0);
-  lv_obj_align(change_label, LV_ALIGN_TOP_MID, 0, 74);
+  lv_label_set_text(change_label, "");
+  lv_obj_align(change_label, LV_ALIGN_TOP_MID, 0, 92);
 
   range_label = lv_label_create(root);
   lv_obj_set_style_text_font(range_label, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(range_label, lv_color_hex(0xDDDDDD), 0);
-  lv_obj_align(range_label, LV_ALIGN_TOP_MID, 0, 98);
+  lv_label_set_text(range_label, "");
+  lv_obj_align(range_label, LV_ALIGN_TOP_MID, 0, 116);
 
   chart = lv_chart_create(root);
-  lv_obj_set_size(chart, 156, 140);
-  lv_obj_align(chart, LV_ALIGN_TOP_MID, 0, 122);
+  lv_obj_set_size(chart, 156, 125);
+  lv_obj_align(chart, LV_ALIGN_TOP_MID, 0, 137);
   lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
   lv_chart_set_div_line_count(chart, 3, 0);
   lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, 0, 1000);
@@ -426,13 +486,13 @@ void on_open(lv_obj_t *parent) {
   // instead of actually centered (same LVGL gotcha as the News app's
   // detail view - see its own comment for the fuller explanation).
   update_timescale_label();
-  lv_obj_align_to(timescale_label, chart, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
+  lv_obj_align_to(timescale_label, chart, LV_ALIGN_OUT_BOTTOM_MID, 0, 3);
 
   lv_obj_t *hint = lv_label_create(root);
   lv_label_set_text(hint, "swipe: scale  |  " ACTION_WORD ": refresh  |  " HOME_HINT);
   lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(hint, lv_color_hex(0xDDDDDD), 0);
-  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -8);
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -6);
 
   shown_generation = 0;
   poll_timer = lv_timer_create(poll_fetch, POLL_MS, nullptr);
