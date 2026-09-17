@@ -351,6 +351,21 @@ void update_level(const ImuSample &s) {
 // Renders the sphere into ball_canvas_buf and marks the canvas for
 // redraw - see the file header comment for the projection/shading math
 // and why this is a plain pixel buffer rather than a rotated LVGL object.
+// Constant added to the globe's pitch rotation so that holding the device
+// vertically (screen facing the viewer), not lying it flat on the table,
+// is the orientation that shows the front-facing/equatorial view (and
+// therefore, combined with LON_OFFSET_DEG below, the Americas) - per user
+// request. ball_pitch_deg/ball_roll_deg (fed by update_level()'s
+// flat-table-reference formula, unchanged - see their declaration
+// comment) evaluate to roughly roll=-90/pitch=0 when the device is held
+// vertically instead of flat (a 90deg pitch up from flat, physically), so
+// shifting by this amount here makes *that* orientation the one that
+// lands on the identity rotation the old flat-table code used to rely on,
+// without having to touch update_level()'s formula or LON_OFFSET_DEG.
+// +90 was tried first and made the globe show upside-down when held
+// vertically - per user feedback, -90 is correct instead.
+constexpr float BALL_VERTICAL_REF_SHIFT_DEG = -90.0f;
+
 void render_ball() {
   if (!ball_canvas_buf) return;  // allocation failed in on_open - see its own handling
   // Pitch/roll swapped per user feedback on real hardware - the ball's
@@ -359,7 +374,7 @@ void render_ball() {
   // backwards, then again because changing roll's rotation axis (see
   // rz_roll below) flipped pitch's effective direction back along with
   // it.
-  float pitch_rad = ball_roll_deg * RAD_PER_DEG;
+  float pitch_rad = (ball_roll_deg + BALL_VERTICAL_REF_SHIFT_DEG) * RAD_PER_DEG;
   float roll_rad = ball_pitch_deg * RAD_PER_DEG;
   float cos_roll = cosf(roll_rad), sin_roll = sinf(roll_rad);
   float cos_pitch = cosf(pitch_rad), sin_pitch = sinf(pitch_rad);
